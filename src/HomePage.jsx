@@ -76,7 +76,7 @@ export default function HomePage() {
         </header>
 
         <div className="image-section">
-          <img src="/images/Hospital.jpg" alt="Hospital" className="hospital-image" />
+          <img src="https://static.vecteezy.com/system/resources/thumbnails/036/372/442/small/hospital-building-with-ambulance-emergency-car-on-cityscape-background-cartoon-illustration-vector.jpg" alt="Hospital" className="hospital-image" />
           <div className="predict-box">
             <h3>📊 Patient Prediction</h3>
             <p>Get insights into the expected patient count for the selected date. Helps in planning the date and time of the visit.</p>
@@ -84,7 +84,6 @@ export default function HomePage() {
             <button className="predict-btn" onClick={() => navigate("/predict")}>Predict Patient Count</button>
           </div>
         </div>
-
         <section className="departments">
           <h2>Our Departments</h2>
           <div className="department-list">

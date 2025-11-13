@@ -16,7 +16,7 @@
   left: 0;
   height: 100%;
   width: 100%;
-  background: url("/images/Hospital.jpg") no-repeat center center/cover;
+  background: url("https://static.vecteezy.com/system/resources/thumbnails/036/372/442/small/hospital-building-with-ambulance-emergency-car-on-cityscape-background-cartoon-illustration-vector.jpg") no-repeat center center/cover;
   filter: blur(6px);
   z-index: 0;
 }
