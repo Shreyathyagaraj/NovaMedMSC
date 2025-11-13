@@ -76,7 +76,7 @@ export default function HomePage() {
         </header>
 
         <div className="image-section">
-          <img src="https://sdmhospitalujire.com/wp-content/uploads/2021/10/DSC_0004-1.jpg" alt="Hospital" className="hospital-image" />
+          <img src="/images/Hospital.jpg" alt="Hospital" className="hospital-image" />
           <div className="predict-box">
             <h3>📊 Patient Prediction</h3>
             <p>Get insights into the expected patient count for the selected date. Helps in planning the date and time of the visit.</p>
