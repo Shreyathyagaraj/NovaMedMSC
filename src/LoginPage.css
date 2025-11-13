@@ -16,7 +16,7 @@
   left: 0;
   height: 100%;
   width: 100%;
-  background: url("C:\\Users\\shrey\\patient-registration\\public\\images\\Hospital.jpg") no-repeat center center/cover;
+  background: url("/images/Hospital.jpg") no-repeat center center/cover;
   filter: blur(6px);
   z-index: 0;
 }
