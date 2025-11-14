@@ -26,3 +26,6 @@ backend/serviceAccountKey.json
 backend/.env
 
 
+
+# Local Netlify folder
+.netlify

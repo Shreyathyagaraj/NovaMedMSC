@@ -1,8 +1,2 @@
-[build]
-  functions = "netlify/functions"
-  node_version = "18"
-
-[[redirects]]
-  from = "/webhook"
-  to = "/.netlify/functions/webhook"
-  status = 200
+[functions]
+directory = "backend/functions"
