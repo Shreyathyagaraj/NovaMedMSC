@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from firebase_admin import credentials, firestore, initialize_app
 import pandas as pd
 import numpy as np
-from whatsapp import send_whatsapp_message
+
 
 app = FastAPI()
 
