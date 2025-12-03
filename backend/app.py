@@ -9,12 +9,17 @@ from firebase_admin import credentials, firestore, initialize_app
 import pandas as pd
 import numpy as np
 from webhook import router as whatsapp_router
-
+from firebase_config import init_firebase
 
 
 
 app = FastAPI()
 app.include_router(whatsapp_router)
+db = init_firebase()
+
+@app.get("/")
+def home():
+    return {"message": "Backend running"}
 # ----------------- Logging -----------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

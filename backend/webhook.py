@@ -11,6 +11,15 @@ import httpx
 from fastapi import APIRouter, Request, HTTPException
 from firebase_admin import credentials, firestore, initialize_app, _apps
 import dateparser
+from firebase_config import init_firebase
+db = init_firebase()   # ensure firebase is initialized
+
+def save_message(user_id, message):
+    db.collection("messages").add({
+        "user": user_id,
+        "message": message
+    })
+
 
 router = APIRouter()
 logger = logging.getLogger("webhook")
