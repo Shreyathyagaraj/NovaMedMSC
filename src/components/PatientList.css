@@ -1,0 +1,103 @@
+.patient-list-container {
+  padding: 20px;
+  text-align: center;
+}
+
+.filters {
+  margin-bottom: 20px;
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.patient-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+}
+
+.patient-table th,
+.patient-table td {
+  border: 1px solid #ddd;
+  padding: 8px;
+}
+
+.patient-table th {
+  background-color: #007bff;
+  color: white;
+}
+
+.sort-btn {
+  background: #007bff;
+  color: white;
+  border: none;
+  padding: 5px 10px;
+  cursor: pointer;
+  border-radius: 5px;
+}
+
+button {
+  margin: 2px;
+  cursor: pointer;
+  border: none;
+  border-radius: 5px;
+  padding: 4px 8px;
+}
+
+button:hover {
+  opacity: 0.8;
+}
+
+/* ✨ Modal Styling */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.modal {
+  background: white;
+  padding: 20px;
+  border-radius: 10px;
+  width: 90%;
+  max-width: 400px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+}
+
+.modal-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.modal input,
+.modal select {
+  padding: 6px;
+  border: 1px solid #ccc;
+  border-radius: 5px;
+}
+
+.modal-buttons {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 15px;
+}
+
+.save-btn {
+  background-color: #28a745;
+  color: white;
+  padding: 6px 12px;
+}
+
+.cancel-btn {
+  background-color: #dc3545;
+  color: white;
+  padding: 6px 12px;
+}

@@ -1,0 +1,81 @@
+/* Background wrapper */
+.login-page {
+  position: relative;
+  height: 100vh;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+}
+
+/* Blurred hospital background */
+.login-bg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 100%;
+  background: url("https://static.vecteezy.com/system/resources/thumbnails/036/372/442/small/hospital-building-with-ambulance-emergency-car-on-cityscape-background-cartoon-illustration-vector.jpg") no-repeat center center/cover;
+  filter: blur(6px);
+  z-index: 0;
+}
+
+/* Login card (clear) */
+.login-box {
+  position: relative;
+  z-index: 1;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 30px;
+  border-radius: 12px;
+  width: 350px;
+  box-shadow: 0px 6px 15px rgba(0,0,0,0.3);
+  text-align: center;
+}
+
+/* Other existing styles */
+.header h1 {
+  font-size: 20px;
+  margin-bottom: 5px;
+}
+.tagline {
+  font-size: 14px;
+  color: #444;
+  margin-bottom: 20px;
+}
+.login-btn {
+  background: #007bff;
+  color: #fff;
+  padding: 10px;
+  border: none;
+  border-radius: 6px;
+  width: 100%;
+  margin-top: 15px;
+  cursor: pointer;
+}
+.login-btn:hover {
+  background: #0056b3;
+}
+.social-btn.google {
+  margin-top: 10px;
+  background: #db4437;
+  color: #fff;
+  padding: 10px;
+  border-radius: 6px;
+  width: 100%;
+  border: none;
+  cursor: pointer;
+}
+.social-btn.google:hover {
+  background: #b5372b;
+}
+.divider {
+  margin: 20px 0;
+  text-align: center;
+  position: relative;
+}
+.divider span {
+  background: #fff;
+  padding: 0 10px;
+  color: #888;
+}
