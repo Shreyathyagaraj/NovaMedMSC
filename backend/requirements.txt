@@ -6,4 +6,3 @@ requests
 python-dotenv
 pandas
 dateparser
-init_firebase
