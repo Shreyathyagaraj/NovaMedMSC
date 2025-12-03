@@ -8,10 +8,13 @@ from fastapi.responses import JSONResponse
 from firebase_admin import credentials, firestore, initialize_app
 import pandas as pd
 import numpy as np
+from webhook import router as whatsapp_router
+
+
 
 
 app = FastAPI()
-
+app.include_router(whatsapp_router)
 # ----------------- Logging -----------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -119,8 +122,7 @@ async def register_patient(request: Request):
 
         logger.info(f"📞 Sending WhatsApp message to {phone_e164}...")
 
-        # Run Selenium message sender
-        send_whatsapp_message(phone_e164, msg)
+        
 
         # 5️⃣ Return success
         return {"PatientID": pid, "status": "success", "whatsapp": "sent"}
