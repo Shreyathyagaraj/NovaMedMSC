@@ -9,4 +9,3 @@ python-dotenv
 pandas
 selenium
 webdriver_manager
-whatsapp
