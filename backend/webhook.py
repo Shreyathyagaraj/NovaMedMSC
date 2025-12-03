@@ -542,12 +542,15 @@ async def verify_webhook(request: Request):
     mode = params.get("hub.mode")
     token = params.get("hub.verify_token")
     challenge = params.get("hub.challenge")
+
     if mode == "subscribe" and token == VERIFY_TOKEN:
         logger.info("Webhook verified successfully")
-        # Return challenge as plain text or numeric
-        return int(challenge) if challenge and challenge.isdigit() else challenge
-    logger.warning("Webhook verification failed with token %s", token)
+        # MUST return the challenge exactly
+        return int(challenge) if challenge and str(challenge).isdigit() else challenge
+
+    logger.warning(f"Webhook verification failed. Mode={mode}, Token={token}")
     raise HTTPException(status_code=403, detail="Verification failed")
+
 
 
 @router.post("/webhook")
