@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any
 
 import httpx
 from fastapi import APIRouter, Request, HTTPException
-from firebase_admin import credentials, firestore, initialize_app, _apps
+from firebase_admin import firestore
 import dateparser
 
 # ================= FIREBASE CONFIG ====================
@@ -23,19 +23,17 @@ logging.basicConfig(level=logging.INFO)
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "shreyaWebhook123")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
-FIREBASE_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "serviceAccountKey.json")
 
-# NLP/support endpoint to forward user queries (set this to your ML service)
 NLP_SUPPORT_URL = os.getenv("NLP_SUPPORT_URL", "http://localhost:8000/nlp_support")
-# Public PDF URL to send as dummy report (must be publicly accessible)
 REPORT_PDF_URL = os.getenv("REPORT_PDF_URL", "")
+REPORT_BASE_URL = os.getenv("REPORT_BASE_URL", "")
 
 if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID:
     logger.warning("⚠️ WHATSAPP_TOKEN or PHONE_NUMBER_ID missing. Outgoing messages will fail.")
 if not REPORT_PDF_URL:
-    logger.warning("⚠️ REPORT_PDF_URL is not set. Report PDF sending will fail unless you provide a public URL.")
+    logger.warning("⚠️ REPORT_PDF_URL is not set. PDF sending might fail.")
 
-# ================= DOCTOR SCHEDULES & LIMITS (as requested) =================
+# ================= DOCTOR SCHEDULES & LIMITS =================
 doctorSchedule = {
     "Cardiology": ["09:00", "12:00"],
     "Neurology": ["14:00", "17:00"],
@@ -54,17 +52,17 @@ doctorLimits = {
     "Dermatology": 15,
 }
 
-# Utility: build department slots dict used by registration logic
 DEPARTMENT_SLOTS = {
     dept: {"times": (times[0], times[1]), "capacity": doctorLimits.get(dept, 5)}
     for dept, times in doctorSchedule.items()
 }
 
-# ================= UTILITIES ==========================
+# ================= WHATSAPP SEND FUNCTIONS ==================
+
 async def send_whatsapp_text(to: str, text: str):
     if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID:
         logger.error("WhatsApp credentials missing.")
-        return {"error": "whatsapp credentials missing"}
+        return
 
     url = f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages"
     payload = {
@@ -76,15 +74,9 @@ async def send_whatsapp_text(to: str, text: str):
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
 
     async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.post(url, json=payload, headers=headers)
-        return r.json()
+        await client.post(url, json=payload, headers=headers)
 
-
-async def send_whatsapp_buttons(to: str, body: str, buttons: list):
-    if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID:
-        logger.error("WhatsApp credentials missing.")
-        return {"error": "whatsapp credentials missing"}
-
+async def send_whatsapp_buttons(to, body, buttons):
     url = f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages"
     payload = {
         "messaging_product": "whatsapp",
@@ -93,46 +85,36 @@ async def send_whatsapp_buttons(to: str, body: str, buttons: list):
         "interactive": {
             "type": "button",
             "body": {"text": body},
-            "action": {"buttons": [
-                {"type": "reply", "reply": {"id": b["id"], "title": b["title"]}}
-                for b in buttons
-            ]}
+            "action": {
+                "buttons": [
+                    {"type": "reply", "reply": {"id": b["id"], "title": b["title"]}}
+                    for b in buttons
+                ]
+            },
         },
     }
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
 
     async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.post(url, json=payload, headers=headers)
-        return r.json()
+        await client.post(url, json=payload, headers=headers)
 
-
-async def send_whatsapp_document(to: str, document_url: str, filename: str = "report.pdf"):
-    """
-    Sends a document (PDF) via WhatsApp using a public URL.
-    """
-    if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID:
-        logger.error("WhatsApp credentials missing.")
-        return {"error": "whatsapp credentials missing"}
+async def send_whatsapp_document(to, document_url, filename="report.pdf"):
     if not document_url:
-        logger.error("Document URL missing.")
-        return {"error": "document url missing"}
+        return
 
     url = f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages"
     payload = {
         "messaging_product": "whatsapp",
         "to": to.lstrip("+"),
         "type": "document",
-        "document": {
-            "link": document_url,
-            "filename": filename
-        }
+        "document": {"link": document_url, "filename": filename},
     }
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
 
     async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.post(url, json=payload, headers=headers)
-        return r.json()
+        await client.post(url, json=payload, headers=headers)
 
+# ================= HELPERS =================
 
 def normalize_phone(text: str):
     s = re.sub(r"[^\d+]", "", text)
@@ -140,134 +122,105 @@ def normalize_phone(text: str):
         return s
     if len(s) == 10:
         return "+91" + s
-    if len(s) >= 11:
+    if len(s) > 10:
         return "+" + s
     return None
-
 
 def parse_date_time(text: str):
     parsed = dateparser.parse(text)
     if not parsed:
         return {"date": None, "time": None}
+    return {"date": parsed.strftime("%Y-%m-%d"), "time": parsed.strftime("%H:%M")}
 
-    return {
-        "date": parsed.strftime("%Y-%m-%d"),
-        "time": parsed.strftime("%H:%M")
-    }
+# ================= STATE MANAGEMENT =================
 
+async def get_state(sender):
+    doc = db.collection("registration_states").document(sender).get()
+    return doc.to_dict() if doc.exists else {"step": None, "data": {}}
 
-# ========== STATE HELPERS ================
-async def get_state(sender: str):
-    ref = db.collection("registration_states").document(sender)
-    doc = ref.get()
-    if not doc.exists:
-        return {"step": None, "data": {}}
-    return doc.to_dict()
-
-
-async def set_state(sender: str, state: dict):
+async def set_state(sender, state):
     db.collection("registration_states").document(sender).set(
         {**state, "updatedAt": firestore.SERVER_TIMESTAMP}
     )
 
-
-async def reset_state(sender: str):
+async def reset_state(sender):
     db.collection("registration_states").document(sender).delete()
 
-
-# ========== APPOINTMENT REGISTRATION (transactional) ==============
-def generate_patient_id_tx(tx):
-    ref = db.collection("metadata").document("patient_counter")
-    snap = tx.get(ref)
-
-    if snap.exists:
-        new = snap.to_dict().get("count", 1000) + 1
-    else:
-        new = 1001
-
-    tx.set(ref, {"count": new}, merge=True)
-    return f"P{new}"
-
+# ================= FIRESTORE TRANSACTION FIXED =================
 
 def attempt_registration_tx(data: dict):
-    """
-    data should contain keys:
-    firstName, lastName, gender, address, phoneNumber, email, department, registrationDate, registrationTime
-    """
     slot_id = f"{data['department']}_{data['registrationDate']}_{data['registrationTime']}"
     slot_ref = db.collection("appointments").document(slot_id)
+    counter_ref = db.collection("metadata").document("patient_counter")
 
-    def fn(tx):
-        snap = tx.get(slot_ref)
-        counted = snap.to_dict().get("count", 0) if snap.exists else 0
+    @firestore.transactional
+    def register(tx):
+        # Slot count
+        slot_snap = tx.get(slot_ref)
+        current_count = slot_snap.to_dict().get("count", 0) if slot_snap.exists else 0
 
         capacity = DEPARTMENT_SLOTS[data["department"]]["capacity"]
-        if counted >= capacity:
+        if current_count >= capacity:
             raise ValueError("Slot is full.")
 
-        pid = generate_patient_id_tx(tx)
-        patient_ref = db.collection("patients").document(pid)
+        # Patient ID
+        counter_snap = tx.get(counter_ref)
+        new_id = counter_snap.to_dict().get("count", 1000) + 1 if counter_snap.exists else 1001
+        tx.set(counter_ref, {"count": new_id})
 
-        # Store with the requested field names/capitalization
+        pid = f"P{new_id}"
+
+        # Write patient
+        patient_ref = db.collection("patients").document(pid)
         tx.set(patient_ref, {
             "PatientID": pid,
-            "FirstName": data.get("firstName", ""),
-            "LastName": data.get("lastName", ""),
-            "Gender": data.get("gender", ""),
-            "Address": data.get("address", ""),
-            "PhoneNumber": data.get("phoneNumber", ""),
-            "Email": data.get("email", ""),
-            "Department": data.get("department", ""),
-            "RegistrationDate": data.get("registrationDate", ""),
-            "RegistrationTime": data.get("registrationTime", ""),
+            "FirstName": data["firstName"],
+            "LastName": data["lastName"],
+            "Gender": data["gender"],
+            "Address": data["address"],
+            "PhoneNumber": data["phoneNumber"],
+            "Email": data["email"],
+            "Department": data["department"],
+            "RegistrationDate": data["registrationDate"],
+            "RegistrationTime": data["registrationTime"],
             "createdAt": firestore.SERVER_TIMESTAMP,
         })
 
+        # Update slot
         tx.set(slot_ref, {
+            "count": current_count + 1,
             "department": data["department"],
             "date": data["registrationDate"],
             "time": data["registrationTime"],
-            "count": counted + 1,
         }, merge=True)
 
         return pid
 
-    return db.run_transaction(fn)
+    return register(db.transaction())
 
+# ================= NLP SUPPORT =================
 
-# ========== SUPPORT (NLP) ==========
 async def nlp_support_reply(query: str) -> str:
-    # Forward query to configured NLP endpoint
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             res = await client.post(NLP_SUPPORT_URL, json={"query": query})
             if res.status_code == 200:
-                j = res.json()
-                # expected { "answer": "..." } or simply text
-                if isinstance(j, dict) and "answer" in j:
-                    return j["answer"]
-                if isinstance(j, dict) and "reply" in j:
-                    return j["reply"]
-                # fallback to JSON -> text
-                return res.text
-            else:
-                logger.warning("NLP endpoint returned status %s", res.status_code)
-                return "Sorry, support is temporarily unavailable. Please try again later."
-    except Exception as e:
-        logger.exception("NLP support call failed: %s", e)
-        return "Sorry, I couldn't contact the support system right now."
+                body = res.json()
+                return body.get("answer") or body.get("reply") or res.text
+            return "Support system unavailable now."
+    except:
+        return "Unable to contact support."
 
+# ================= MAIN CHAT FLOW =================
 
-# ================= MESSAGE PROCESSOR ====================
 async def process_incoming_message(sender: str, text: str, wa_message: dict):
     text_raw = text.strip()
     text = text_raw.lower()
 
     state = await get_state(sender)
-    step = state.get("step")
-    data = state.get("data", {})
+    step, data = state.get("step"), state.get("data", {})
 
-    # ==== NEW SESSION ====
+    # START
     if not step:
         if text in ["hi", "hello", "hey"]:
             await send_whatsapp_buttons(
@@ -285,42 +238,31 @@ async def process_incoming_message(sender: str, text: str, wa_message: dict):
         await send_whatsapp_text(sender, "Send *Hi* to start.")
         return
 
-    # ==== MENU ====
+    # MENU
     if step == "menu":
-        button_id = None
         try:
-            button_id = wa_message["interactive"]["button_reply"]["id"]
+            btn = wa_message["interactive"]["button_reply"]["id"]
         except:
-            pass
+            btn = None
 
-        if button_id == "opt_book" or text in ["book", "book appointment", "appointment"]:
+        if btn == "opt_book" or text in ["book", "appointment"]:
             await send_whatsapp_text(sender, "Enter First Name:")
             await set_state(sender, {"step": "first_name", "data": {}})
             return
 
-        if button_id == "opt_report" or text in ["report", "get report"]:
-            await send_whatsapp_text(sender, "Please enter your Patient ID to retrieve report:")
-            await set_state(sender, {"step": "report_waiting_for_id", "data": {}})
+        if btn == "opt_report":
+            await send_whatsapp_text(sender, "Enter your Patient ID:")
+            await set_state(sender, {"step": "report_id", "data": {}})
             return
 
-        if button_id == "opt_support" or text in ["support", "help"]:
-            await send_whatsapp_text(sender, "You're in Support mode. Ask your question and I'll forward it to our specialist system.")
+        if btn == "opt_support":
+            await send_whatsapp_text(sender, "Support activated. Ask your question:")
             await set_state(sender, {"step": "support", "data": {}})
             return
 
-        # fallback
-        await send_whatsapp_buttons(
-            sender,
-            "Choose an option:",
-            [
-                {"id": "opt_book", "title": "Book Appointment"},
-                {"id": "opt_report", "title": "Get Report"},
-                {"id": "opt_support", "title": "Support"},
-            ],
-        )
         return
 
-    # ==== BOOKING FLOW ====
+    # BOOKING FLOW
     if step == "first_name":
         data["firstName"] = text_raw.title()
         await set_state(sender, {"step": "last_name", "data": data})
@@ -330,13 +272,13 @@ async def process_incoming_message(sender: str, text: str, wa_message: dict):
     if step == "last_name":
         data["lastName"] = text_raw.title()
         await set_state(sender, {"step": "gender", "data": data})
-        await send_whatsapp_text(sender, "Enter Gender (Male/Female/Other):")
+        await send_whatsapp_text(sender, "Enter Gender:")
         return
 
     if step == "gender":
         data["gender"] = text_raw.title()
         await set_state(sender, {"step": "address", "data": data})
-        await send_whatsapp_text(sender, "Enter Address (give a short address):")
+        await send_whatsapp_text(sender, "Enter Address:")
         return
 
     if step == "address":
@@ -347,28 +289,27 @@ async def process_incoming_message(sender: str, text: str, wa_message: dict):
 
     if step == "email":
         if text != "skip":
-            if not re.match(r".+@.+\..+", text):
-                await send_whatsapp_text(sender, "Invalid email format. Please enter a valid email or type 'skip'.")
+            if re.match(r".+@.+\..+", text):
+                data["email"] = text_raw
+            else:
+                await send_whatsapp_text(sender, "Invalid email. Try again:")
                 return
-            data["email"] = text
         else:
             data["email"] = ""
 
         await set_state(sender, {"step": "phone", "data": data})
-        await send_whatsapp_text(sender, "Enter Phone Number (10 digits or include country code):")
+        await send_whatsapp_text(sender, "Enter Phone Number:")
         return
 
     if step == "phone":
         phone = normalize_phone(text_raw)
         if not phone:
-            await send_whatsapp_text(sender, "Invalid phone. Try again (10 digits or include country code).")
+            await send_whatsapp_text(sender, "Invalid phone. Try again:")
             return
         data["phoneNumber"] = phone
 
-        # Ask department choices
         msg = "Choose Department:\n"
-        dept_list = list(DEPARTMENT_SLOTS.keys())
-        for i, d in enumerate(dept_list, start=1):
+        for i, d in enumerate(DEPARTMENT_SLOTS.keys(), start=1):
             msg += f"{i}. {d}\n"
 
         await set_state(sender, {"step": "department", "data": data})
@@ -378,168 +319,110 @@ async def process_incoming_message(sender: str, text: str, wa_message: dict):
     if step == "department":
         dept_list = list(DEPARTMENT_SLOTS.keys())
         if text.isdigit() and 1 <= int(text) <= len(dept_list):
-            chosen = dept_list[int(text) - 1]
-            data["department"] = chosen
+            data["department"] = dept_list[int(text) - 1]
         else:
-            # accept exact department name too
-            matches = [d for d in dept_list if d.lower() == text]
-            if matches:
-                data["department"] = matches[0]
-            else:
-                await send_whatsapp_text(sender, "Invalid choice. Send the number from the list.")
-                return
+            await send_whatsapp_text(sender, "Invalid choice. Try again:")
+            return
 
-        # ask date
         await set_state(sender, {"step": "date", "data": data})
-        await send_whatsapp_text(sender, "Enter preferred date (e.g., 2025-12-10):")
+        await send_whatsapp_text(sender, "Enter preferred date (YYYY-MM-DD):")
         return
 
     if step == "date":
         parsed = parse_date_time(text_raw)
         if not parsed["date"]:
-            await send_whatsapp_text(sender, "Invalid date. Try again (YYYY-MM-DD or natural language).")
+            await send_whatsapp_text(sender, "Invalid date. Try again:")
             return
 
         data["registrationDate"] = parsed["date"]
 
-        # Build available hourly slots from department times
-        dept_cfg = DEPARTMENT_SLOTS.get(data["department"])
-        if not dept_cfg:
-            await send_whatsapp_text(sender, "Configuration error: department not found.")
-            await reset_state(sender)
-            return
+        start_h = int(DEPARTMENT_SLOTS[data["department"]]["times"][0][:2])
+        end_h = int(DEPARTMENT_SLOTS[data["department"]]["times"][1][:2])
 
-        start_h = int(dept_cfg["times"][0][:2])
-        end_h = int(dept_cfg["times"][1][:2])
-
-        # generate hourly slots in range [start_h, end_h - 1] as common practice, but include end if desired
-        times = []
-        for h in range(start_h, end_h + 1):
-            t = f"{h:02d}:00"
-            times.append(t)
-
+        times = [f"{h:02d}:00" for h in range(start_h, end_h + 1)]
         data["time_list"] = times
-        await set_state(sender, {"step": "time", "data": data})
 
         msg = "Available time slots:\n"
         for i, t in enumerate(times, start=1):
             msg += f"{i}. {t}\n"
+
+        await set_state(sender, {"step": "time", "data": data})
         await send_whatsapp_text(sender, msg)
         return
 
     if step == "time":
-        times = data.get("time_list", [])
-        if not times:
-            await send_whatsapp_text(sender, "No time slots available. Please restart by saying 'hi'.")
-            await reset_state(sender)
+        times = data["time_list"]
+        if not text.isdigit() or not (1 <= int(text) <= len(times)):
+            await send_whatsapp_text(sender, "Invalid slot. Try again:")
             return
 
-        if text.isdigit() and 1 <= int(text) <= len(times):
-            selected = times[int(text) - 1]
-        else:
-            await send_whatsapp_text(sender, "Send the number corresponding to the desired time slot.")
-            return
+        data["registrationTime"] = times[int(text) - 1]
 
-        data["registrationTime"] = selected
-
-        # Validate capacity and register immediately (no OTP)
         try:
-            pid = attempt_registration_tx({
-                "firstName": data.get("firstName", ""),
-                "lastName": data.get("lastName", ""),
-                "gender": data.get("gender", ""),
-                "address": data.get("address", ""),
-                "phoneNumber": data.get("phoneNumber", ""),
-                "email": data.get("email", ""),
-                "department": data.get("department", ""),
-                "registrationDate": data.get("registrationDate", ""),
-                "registrationTime": data.get("registrationTime", ""),
-            })
-
-            # attempt_registration_tx returns a transaction (callable) result (synchronous in this context)
-            # If the tx returns a future-like Firestore result, ensure we handle it. In firebase-admin python run_transaction returns value.
-            if isinstance(pid, str) and pid.startswith("P"):
-                await send_whatsapp_text(sender, f"🎉 Appointment booked!\nPatient ID: {pid}\nDepartment: {data.get('department')}\nDate: {data.get('registrationDate')}\nTime: {data.get('registrationTime')}")
-            else:
-                # If pid is a future-like (unlikely here), convert to str
-                await send_whatsapp_text(sender, f"🎉 Appointment booked!\nPatient ID: {str(pid)}")
+            pid = attempt_registration_tx(data)
+            await send_whatsapp_text(
+                sender,
+                f"🎉 Appointment Confirmed!\nPatient ID: {pid}\nDepartment: {data['department']}\nDate: {data['registrationDate']}\nTime: {data['registrationTime']}",
+            )
         except Exception as e:
-            logger.exception("Registration failed: %s", e)
-            # If it's capacity issue or other error, inform user
-            err_msg = str(e)
-            if "Slot is full" in err_msg:
-                await send_whatsapp_text(sender, f"❌ Sorry, the selected slot is full for {data.get('department')} on {data.get('registrationDate')}. Please pick another date or department. Send 'hi' to restart.")
+            if "Slot is full" in str(e):
+                await send_whatsapp_text(sender, "❌ Slot is full. Try another time.")
             else:
-                await send_whatsapp_text(sender, f"❌ Registration failed: {err_msg}. Please try again later or contact support.")
+                await send_whatsapp_text(sender, "❌ Registration failed. Try later.")
         finally:
             await reset_state(sender)
         return
 
-    # ==== REPORT FLOW ====
-    if step == "report_waiting_for_id":
+    # REPORT FLOW
+    if step == "report_id":
         pid = text_raw.strip()
-        # Basic normalization: if they forgot prefix, try to add 'P' if missing numeric
-        if re.match(r"^\d+$", pid):
+        if pid.isdigit():
             pid = "P" + pid
-        # direct doc lookup
-        doc_ref = db.collection("patients").document(pid)
-        doc_snap = doc_ref.get()
-        if not doc_snap.exists:
-            await send_whatsapp_text(sender, f"No patient found with ID {pid}. Please check and try again.")
+
+        doc = db.collection("patients").document(pid).get()
+        if not doc.exists:
+            await send_whatsapp_text(sender, "Invalid Patient ID.")
             await reset_state(sender)
             return
 
-        pdata = doc_snap.to_dict()
-        # Build summary text
+        p = doc.to_dict()
         summary = (
-            f"Patient Report for {pdata.get('FirstName','')} {pdata.get('LastName','')}\n"
-            f"Patient ID: {pdata.get('PatientID')}\n"
-            f"Department: {pdata.get('Department')}\n"
-            f"Date: {pdata.get('RegistrationDate')}\n"
-            f"Time: {pdata.get('RegistrationTime')}\n"
-            f"Phone: {pdata.get('PhoneNumber')}\n"
-            f"Email: {pdata.get('Email')}\n"
-            f"Address: {pdata.get('Address')}\n"
-            f"Gender: {pdata.get('Gender')}\n"
+            f"Patient Report\n"
+            f"Name: {p['FirstName']} {p['LastName']}\n"
+            f"ID: {pid}\n"
+            f"Department: {p['Department']}\n"
+            f"Date: {p['RegistrationDate']}\n"
+            f"Time: {p['RegistrationTime']}"
         )
 
         await send_whatsapp_text(sender, summary)
 
-        # Send PDF document (requires REPORT_PDF_URL to be publicly reachable)
-        REPORT_BASE_URL = os.getenv("REPORT_BASE_URL", "")
         if REPORT_BASE_URL:
             pdf_url = f"{REPORT_BASE_URL}/reports/{pid}"
-            
-            await send_whatsapp_document(sender, pdf_url, filename=f"{pid}_report.pdf")
+            await send_whatsapp_document(sender, pdf_url, f"{pid}_report.pdf")
         else:
-            await send_whatsapp_text(sender, "Report service not configured. Ask admin to set REPORT_BASE_URL.")
-
+            await send_whatsapp_text(sender, "Report service not configured.")
 
         await reset_state(sender)
         return
 
-    # ==== SUPPORT MODE ====
+    # SUPPORT FLOW
     if step == "support":
-        # forward the message to NLP and return the response
         reply = await nlp_support_reply(text_raw)
         await send_whatsapp_text(sender, reply)
-        # keep support session active so user can ask follow-up queries, or end with 'exit'
-        # If user types 'exit' we reset
-        if text in ["exit", "quit", "bye", "close"]:
-            await send_whatsapp_text(sender, "Support session ended. Send 'hi' to return to main menu.")
+
+        if text in ["exit", "bye", "quit"]:
             await reset_state(sender)
+            await send_whatsapp_text(sender, "Support session ended.")
         else:
-            # remain in support
             await set_state(sender, {"step": "support", "data": {}})
         return
 
-    # ==== FALLBACK ====
+    # FALLBACK
     await send_whatsapp_text(sender, "Send 'hi' to start.")
     await reset_state(sender)
-    return
 
-
-# ================== FASTAPI WEBHOOK ENDPOINTS =========================
+# ================= WEBHOOK ROUTES =================
 
 @router.get("/webhook")
 async def verify_webhook(request: Request):
@@ -552,7 +435,6 @@ async def verify_webhook(request: Request):
 
     raise HTTPException(status_code=403, detail="Verification failed")
 
-
 @router.post("/webhook")
 async def receive_webhook(request: Request):
     body = await request.json()
@@ -561,26 +443,19 @@ async def receive_webhook(request: Request):
     try:
         entry = body["entry"][0]["changes"][0]["value"]
         messages = entry.get("messages", [])
-
         if not messages:
             return {"status": "ignored"}
 
         msg = messages[0]
         sender = msg["from"]
-        # extract text body robustly
+
         text = ""
         if msg.get("text"):
             text = msg["text"]["body"]
-        elif msg.get("button"):
-            text = msg["button"].get("text", "")
         elif msg.get("interactive") and msg["interactive"].get("type") == "button_reply":
-            text = msg["interactive"]["button_reply"].get("title", "") or msg["interactive"]["button_reply"].get("id", "")
-        else:
-            # other types ignored for now (media etc.)
-            text = ""
+            text = msg["interactive"]["button_reply"]["title"]
 
         await process_incoming_message(sender, text, msg)
-
         return {"status": "ok"}
 
     except Exception as e:
