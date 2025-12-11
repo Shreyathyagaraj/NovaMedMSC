@@ -10,11 +10,15 @@ import pandas as pd
 import numpy as np
 from webhook import router as whatsapp_router
 from firebase_config import init_firebase
+from fastapi import FastAPI
+from backend.webhook import router as webhook_router
+from backend.support_and_reports import router as support_router
 
 
 
 app = FastAPI()
 app.include_router(whatsapp_router)
+app.include_router(support_router)
 db = init_firebase()
 
 @app.get("/")
