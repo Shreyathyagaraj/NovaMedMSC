@@ -186,7 +186,8 @@ def attempt_registration_tx(data: dict):
     @firestore.transactional
     def register(tx):
         # read slot count
-        slot_snap = tx.get(slot_ref)
+        slot_snap_gen = tx.get(slot_ref)
+        slot_snap = next(slot_snap_gen, None)
         current_count = slot_snap.to_dict().get("count", 0) if slot_snap.exists else 0
 
         cap = DEPARTMENT_SLOTS.get(data["department"], {}).get("capacity", 5)
