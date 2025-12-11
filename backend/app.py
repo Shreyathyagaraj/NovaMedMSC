@@ -5,16 +5,12 @@ from datetime import datetime
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from firebase_admin import credentials, firestore, initialize_app
 import pandas as pd
 import numpy as np
 from webhook import router as whatsapp_router
 from firebase_config import init_firebase
 from fastapi import FastAPI
 from support_and_reports import router as support_router
-
-
-
 
 app = FastAPI()
 app.include_router(whatsapp_router)
@@ -28,15 +24,7 @@ def home():
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ----------------- Firebase Init -----------------
-try:
-    cred = credentials.Certificate("serviceAccountKey.json")
-    initialize_app(cred)
-    db = firestore.client()
-    logger.info("✅ Firebase initialized successfully.")
-except Exception as e:
-    logger.error("❌ Firebase init failed: %s", e)
-    db = None
+
 
 # ----------------- Load Model -----------------
 MODEL_PATH = "xgb_patient_model.pkl"
