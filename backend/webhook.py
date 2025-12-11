@@ -174,6 +174,10 @@ def reset_state(sender: str):
     db.collection("registration_states").document(sender).delete()
 
 def attempt_registration_tx(data: dict):
+    """
+    Firestore transaction for booking an appointment.
+    Ensures atomic counters and slot limits.
+    """
 
     slot_id = f"{data['department']}_{data['registrationDate']}_{data['registrationTime']}"
     slot_ref = db.collection("appointments").document(slot_id)
@@ -181,30 +185,34 @@ def attempt_registration_tx(data: dict):
 
     tx = db.transaction()
 
-    def register():
+    def register_in_transaction(txn):
+        # ---- GET SLOT COUNT ----
+        slot_snap = txn.get(slot_ref)
+        if slot_snap.exists:
+            current_count = slot_snap.to_dict().get("count", 0)
+        else:
+            current_count = 0
 
-        # ----- SLOT GET -----
-        slot_snap = tx.get(slot_ref)
-        current_count = slot_snap.to_dict().get("count", 0) if slot_snap.exists else 0
-
+        # ---- CAPACITY CHECK ----
         cap = DEPARTMENT_SLOTS.get(data["department"], {}).get("capacity", 5)
         if current_count >= cap:
             raise ValueError("Slot is full.")
 
-        # ----- COUNTER GET -----
-        counter_snap = tx.get(counter_ref)
+        # ---- GET CURRENT PATIENT COUNTER ----
+        counter_snap = txn.get(counter_ref)
         if counter_snap.exists:
-            new_id_num = counter_snap.to_dict().get("count", 1000) + 1
+            new_num = counter_snap.to_dict().get("count", 1000) + 1
         else:
-            new_id_num = 1001
+            new_num = 1001
 
-        pid = f"P{new_id_num}"
+        pid = f"P{new_num}"
 
-        tx.set(counter_ref, {"count": new_id_num}, merge=True)
+        # ---- UPDATE COUNTER ----
+        txn.set(counter_ref, {"count": new_num}, merge=True)
 
-        # ----- PATIENT RECORD -----
+        # ---- STORE PATIENT ----
         patient_ref = db.collection("patients").document(pid)
-        tx.set(patient_ref, {
+        txn.set(patient_ref, {
             "PatientID": pid,
             "FirstName": data.get("firstName", ""),
             "LastName": data.get("lastName", ""),
@@ -218,8 +226,8 @@ def attempt_registration_tx(data: dict):
             "createdAt": firestore.SERVER_TIMESTAMP
         })
 
-        # ----- SLOT UPDATE -----
-        tx.set(slot_ref, {
+        # ---- UPDATE SLOT COUNT ----
+        txn.set(slot_ref, {
             "department": data["department"],
             "date": data["registrationDate"],
             "time": data["registrationTime"],
@@ -228,11 +236,9 @@ def attempt_registration_tx(data: dict):
 
         return pid
 
-    # ----- RUN TRANSACTION SAFELY -----
-    with tx:
-        pid = register()
-
-    return pid
+    # ---------- RUN TRANSACTION (FINAL FIX) ----------
+    result = tx.call(register_in_transaction)
+    return result
 
 
 
