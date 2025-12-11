@@ -173,31 +173,40 @@ def set_state(sender: str, state: dict):
 def reset_state(sender: str):
     db.collection("registration_states").document(sender).delete()
 
-# ---------- Firestore transactional booking ----------
 def attempt_registration_tx(data: dict):
-    """
-    data keys (internal names): firstName, lastName, gender, address, phoneNumber, email,
-    department, registrationDate, registrationTime
-    """
+
     slot_id = f"{data['department']}_{data['registrationDate']}_{data['registrationTime']}"
     slot_ref = db.collection("appointments").document(slot_id)
     counter_ref = db.collection("metadata").document("patient_counter")
 
-    @firestore.transactional
     def register(tx):
-        # read slot count
-        slot_snap_gen = tx.get(slot_ref)
-        slot_snap = next(slot_snap_gen, None)
-        current_count = slot_snap.to_dict().get("count", 0) if slot_snap.exists else 0
 
+        # ---- FIX 1: slot get ----
+        slot_gen = tx.get(slot_ref)          # generator
+        slot_snap = next(slot_gen, None)     # DocumentSnapshot
+
+        if slot_snap and slot_snap.exists:
+            current_count = slot_snap.to_dict().get("count", 0)
+        else:
+            current_count = 0
+
+        # capacity check
         cap = DEPARTMENT_SLOTS.get(data["department"], {}).get("capacity", 5)
         if current_count >= cap:
             raise ValueError("Slot is full.")
 
-        # increment counter
-        counter_snap = tx.get(counter_ref)
-        new_id_num = counter_snap.to_dict().get("count", 1000) + 1 if counter_snap.exists else 1001
+        # ---- FIX 2: counter get ----
+        counter_gen = tx.get(counter_ref)       # generator
+        counter_snap = next(counter_gen, None)  # DocumentSnapshot
+
+        if counter_snap and counter_snap.exists:
+            new_id_num = counter_snap.to_dict().get("count", 1000) + 1
+        else:
+            new_id_num = 1001
+
+        # update counter
         tx.set(counter_ref, {"count": new_id_num}, merge=True)
+
         pid = f"P{new_id_num}"
 
         # store patient
@@ -226,7 +235,10 @@ def attempt_registration_tx(data: dict):
 
         return pid
 
-    return register(db.transaction())
+    # IMPORTANT → correct transaction invocation
+    transaction = db.transaction()
+    return transaction(register)
+
 
 # ---------- NLP support ----------
 async def nlp_support_reply(query: str) -> str:
