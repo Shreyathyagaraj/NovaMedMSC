@@ -236,8 +236,8 @@ def attempt_registration_tx(data: dict):
         return pid
 
     # IMPORTANT → correct transaction invocation
-    transaction = db.transaction()
-    return transaction.run(register)
+    
+    return db.run_transaction(register)
 
 
 
