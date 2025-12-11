@@ -182,34 +182,29 @@ def attempt_registration_tx(data: dict):
     def register(tx):
 
         # ---- FIX 1: slot get ----
-        slot_gen = tx.get(slot_ref)          # generator
-        slot_snap = next(slot_gen, None)     # DocumentSnapshot
+        slot_gen = tx.get(slot_ref)
+        slot_snap = next(slot_gen, None)
 
-        if slot_snap and slot_snap.exists:
-            current_count = slot_snap.to_dict().get("count", 0)
-        else:
-            current_count = 0
+        current_count = slot_snap.to_dict().get("count", 0) if slot_snap and slot_snap.exists else 0
 
-        # capacity check
         cap = DEPARTMENT_SLOTS.get(data["department"], {}).get("capacity", 5)
         if current_count >= cap:
             raise ValueError("Slot is full.")
 
         # ---- FIX 2: counter get ----
-        counter_gen = tx.get(counter_ref)       # generator
-        counter_snap = next(counter_gen, None)  # DocumentSnapshot
+        counter_gen = tx.get(counter_ref)
+        counter_snap = next(counter_gen, None)
 
         if counter_snap and counter_snap.exists:
             new_id_num = counter_snap.to_dict().get("count", 1000) + 1
         else:
             new_id_num = 1001
 
-        # update counter
         tx.set(counter_ref, {"count": new_id_num}, merge=True)
 
         pid = f"P{new_id_num}"
 
-        # store patient
+        # patient record
         patient_ref = db.collection("patients").document(pid)
         tx.set(patient_ref, {
             "PatientID": pid,
@@ -225,7 +220,7 @@ def attempt_registration_tx(data: dict):
             "createdAt": firestore.SERVER_TIMESTAMP
         })
 
-        # update slot count
+        # slot update
         tx.set(slot_ref, {
             "department": data["department"],
             "date": data["registrationDate"],
@@ -235,9 +230,12 @@ def attempt_registration_tx(data: dict):
 
         return pid
 
-    # IMPORTANT → correct transaction invocation
-    
-    return db.run_transaction(register)
+    # ---- FINAL FIX ----
+    tx = db.transaction()
+    result = register(tx)   # run the function
+    tx.commit()             # commit the transaction
+
+    return result
 
 
 
