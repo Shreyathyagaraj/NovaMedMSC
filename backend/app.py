@@ -11,8 +11,8 @@ import numpy as np
 from webhook import router as whatsapp_router
 from firebase_config import init_firebase
 from fastapi import FastAPI
-from backend.webhook import router as webhook_router
-from backend.support_and_reports import router as support_router
+from support_and_reports import router as support_router
+
 
 
 
