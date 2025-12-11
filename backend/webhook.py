@@ -237,7 +237,8 @@ def attempt_registration_tx(data: dict):
 
     # IMPORTANT → correct transaction invocation
     transaction = db.transaction()
-    return transaction(register)
+    return transaction.run(register)
+
 
 
 # ---------- NLP support ----------
