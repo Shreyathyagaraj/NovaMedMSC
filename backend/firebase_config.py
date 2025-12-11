@@ -5,16 +5,21 @@ import json
 
 def init_firebase():
     if not firebase_admin._apps:
-        # If running on Render, use env variable
         firebase_json = os.getenv("FIREBASE_CREDENTIALS")
 
         if firebase_json:
-            cred_dict = json.loads(firebase_json)
-            cred = credentials.Certificate(cred_dict)
+            print("🔥 FIREBASE_CREDENTIALS FOUND in environment")
+            try:
+                cred_dict = json.loads(firebase_json)
+                cred = credentials.Certificate(cred_dict)
+            except Exception as e:
+                print("❌ ERROR parsing Firebase JSON:", e)
+                raise
         else:
-            # Local development fallback
-            cred = credentials.Certificate("firebase_key.json")
+            print("❌ FIREBASE_CREDENTIALS NOT FOUND in environment!")
+            raise Exception("FIREBASE_CREDENTIALS missing")
 
         firebase_admin.initialize_app(cred)
+        print("✅ Firebase initialized successfully")
 
     return firestore.client()
