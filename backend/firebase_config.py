@@ -5,15 +5,17 @@ import json
 
 def init_firebase():
     if not firebase_admin._apps:
-        # If running on Render, use env variable
+
         firebase_json = os.getenv("FIREBASE_CREDENTIALS")
 
-        if firebase_json:
+        if not firebase_json:
+            raise Exception("❌ FIREBASE_CREDENTIALS env variable missing")
+
+        try:
             cred_dict = json.loads(firebase_json)
             cred = credentials.Certificate(cred_dict)
-        else:
-            # Local development fallback
-            cred = credentials.Certificate("firebase_key.json")
+        except Exception as e:
+            raise Exception("❌ Invalid FIREBASE_CREDENTIALS JSON. Fix env variable.") from e
 
         firebase_admin.initialize_app(cred)
 
