@@ -255,7 +255,116 @@ export default function AppointmentPage({ department }) {
       <p>Please provide the patient details</p>
 
       <form onSubmit={handleSubmit} className="appointment-form">
-        {/* You will paste your existing form fields here */}
+        <div className="form-row">
+  <label>First Name</label>
+  <input
+    type="text"
+    name="FirstName"
+    value={formData.FirstName}
+    onChange={handleChange}
+    required
+  />
+</div>
+
+<div className="form-row">
+  <label>Last Name</label>
+  <input
+    type="text"
+    name="LastName"
+    value={formData.LastName}
+    onChange={handleChange}
+    required
+  />
+</div>
+
+<div className="form-row">
+  <label>Gender</label>
+  <select name="Gender" value={formData.Gender} onChange={handleChange} required>
+    <option value="">Select</option>
+    <option value="Male">Male</option>
+    <option value="Female">Female</option>
+    <option value="Other">Other</option>
+  </select>
+</div>
+
+<div className="form-row">
+  <label>Address</label>
+  <textarea
+    name="Address"
+    value={formData.Address}
+    onChange={handleChange}
+    required
+  ></textarea>
+</div>
+
+<div className="form-row">
+  <label>Date</label>
+  <input
+    type="date"
+    name="RegistrationDate"
+    value={formData.RegistrationDate}
+    onChange={handleChange}
+    required
+  />
+</div>
+
+<div className="form-row">
+  <label>Time</label>
+  <input
+    type="time"
+    name="RegistrationTime"
+    value={formData.RegistrationTime}
+    onChange={handleChange}
+    required
+  />
+</div>
+
+<div className="form-row">
+  <label>Email</label>
+  <input
+    type="email"
+    name="Email"
+    value={formData.Email}
+    onChange={handleChange}
+  />
+</div>
+
+<div className="form-row">
+  <label>Phone Number</label>
+  <input
+    type="text"
+    name="PhoneNumber"
+    value={formData.PhoneNumber}
+    onChange={handleChange}
+    required
+  />
+</div>
+
+<div className="form-row">
+  <label>Age</label>
+  <input
+    type="number"
+    name="Age"
+    value={formData.Age}
+    onChange={handleChange}
+    required
+  />
+</div>
+
+<div className="form-row">
+  <label>Condition</label>
+  <input
+    type="text"
+    name="Condition"
+    value={formData.Condition}
+    onChange={handleChange}
+  />
+</div>
+
+<button type="submit" disabled={loading}>
+  {loading ? "Booking..." : "Book Appointment"}
+</button>
+
       </form>
 
       {success && (
