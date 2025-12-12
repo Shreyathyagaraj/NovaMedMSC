@@ -174,6 +174,7 @@ def reset_state(sender: str):
     db.collection("registration_states").document(sender).delete()
 
 def attempt_registration_tx(data: dict):
+
     slot_id = f"{data['department']}_{data['registrationDate']}_{data['registrationTime']}"
     slot_ref = db.collection("appointments").document(slot_id)
     counter_ref = db.collection("metadata").document("patient_counter")
@@ -181,23 +182,23 @@ def attempt_registration_tx(data: dict):
     @firestore.transactional
     def register(txn):
 
-        # -------- SLOT DOCUMENT --------
-        slot_docs = txn.get_all([slot_ref])
-        slot_snap = slot_docs[0]
+        # -------- READ SLOT DOC (generator safe) --------
+        slot_gen = txn.get_all([slot_ref])
+        slot_snap = next(slot_gen, None)
 
         if slot_snap and slot_snap.exists:
             current_count = slot_snap.to_dict().get("count", 0)
         else:
             current_count = 0
 
-        # -------- CAPACITY CHECK --------
+        # -------- CHECK CAPACITY --------
         cap = DEPARTMENT_SLOTS[data["department"]]["capacity"]
         if current_count >= cap:
             raise ValueError("Slot is full")
 
-        # -------- PATIENT COUNTER --------
-        counter_docs = txn.get_all([counter_ref])
-        counter_snap = counter_docs[0]
+        # -------- READ COUNTER DOC (generator safe) --------
+        counter_gen = txn.get_all([counter_ref])
+        counter_snap = next(counter_gen, None)
 
         if counter_snap and counter_snap.exists:
             new_num = counter_snap.to_dict().get("count", 1000) + 1
@@ -206,10 +207,10 @@ def attempt_registration_tx(data: dict):
 
         pid = f"P{new_num}"
 
-        # ---- UPDATE COUNTER ----
+        # -------- UPDATE COUNTER --------
         txn.set(counter_ref, {"count": new_num}, merge=True)
 
-        # ---- SAVE PATIENT ----
+        # -------- SAVE PATIENT --------
         patient_ref = db.collection("patients").document(pid)
         txn.set(patient_ref, {
             "PatientID": pid,
@@ -225,7 +226,7 @@ def attempt_registration_tx(data: dict):
             "createdAt": firestore.SERVER_TIMESTAMP
         })
 
-        # ---- UPDATE SLOT ----
+        # -------- UPDATE SLOT --------
         txn.set(slot_ref, {
             "department": data["department"],
             "date": data["registrationDate"],
@@ -235,8 +236,9 @@ def attempt_registration_tx(data: dict):
 
         return pid
 
-    # Run transaction
+    # run transactional function
     return register(db.transaction())
+
 
 
 
