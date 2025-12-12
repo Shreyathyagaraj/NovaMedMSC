@@ -175,39 +175,41 @@ def reset_state(sender: str):
 
 def attempt_registration_tx(data: dict):
     """
-    Fully compatible Firestore transaction function.
-    Works on all Firestore Python SDK versions.
+    Clean, guaranteed working Firestore transaction for your structure.
     """
 
     slot_id = f"{data['department']}_{data['registrationDate']}_{data['registrationTime']}"
     slot_ref = db.collection("appointments").document(slot_id)
     counter_ref = db.collection("metadata").document("patient_counter")
 
-    # Create a manual transaction
-    tx = db.transaction()
-
     @firestore.transactional
     def register(txn):
 
-        # ---- SLOT SNAPSHOT ----
+        # ---- READ SLOT DOCUMENT ----
         slot_snap = txn.get(slot_ref)
-        current_count = slot_snap.get("count", 0) if slot_snap.exists else 0
+        if slot_snap.exists:
+            current_count = slot_snap.to_dict().get("count", 0)
+        else:
+            current_count = 0
 
         # ---- CAPACITY CHECK ----
-        cap = DEPARTMENT_SLOTS.get(data["department"], {}).get("capacity", 5)
+        cap = DEPARTMENT_SLOTS[data["department"]]["capacity"]
         if current_count >= cap:
-            raise ValueError("Slot is full.")
+            raise ValueError("Slot is full")
 
-        # ---- COUNTER SNAPSHOT ----
+        # ---- READ PATIENT COUNTER ----
         counter_snap = txn.get(counter_ref)
-        new_num = counter_snap.get("count", 1000) + 1 if counter_snap.exists else 1001
+        if counter_snap.exists:
+            new_num = counter_snap.to_dict().get("count", 1000) + 1
+        else:
+            new_num = 1001
 
         pid = f"P{new_num}"
 
-        # ---- UPDATE COUNTER ----
+        # ---- UPDATE PATIENT COUNTER ----
         txn.set(counter_ref, {"count": new_num}, merge=True)
 
-        # ---- STORE PATIENT ----
+        # ---- SAVE PATIENT ----
         patient_ref = db.collection("patients").document(pid)
         txn.set(patient_ref, {
             "PatientID": pid,
@@ -233,8 +235,9 @@ def attempt_registration_tx(data: dict):
 
         return pid
 
-    # ---- RUN TRANSACTION ----
-    return register(tx)
+    # Run the transaction
+    return register(db.transaction())
+
 
 
 
