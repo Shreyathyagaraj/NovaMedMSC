@@ -235,8 +235,9 @@ def attempt_registration_tx(data: dict):
 
         return pid
 
-    # Run the transaction
-    return register(db.transaction())
+    # ❗ Correct call - pass db (client), not db.transaction()
+    return register(db)
+
 
 
 
