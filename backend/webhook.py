@@ -175,35 +175,32 @@ def reset_state(sender: str):
 
 def attempt_registration_tx(data: dict):
     """
-    Firestore transaction for booking an appointment.
-    Ensures atomic counters and slot limits.
+    Fully compatible Firestore transaction function.
+    Works on all Firestore Python SDK versions.
     """
 
     slot_id = f"{data['department']}_{data['registrationDate']}_{data['registrationTime']}"
     slot_ref = db.collection("appointments").document(slot_id)
     counter_ref = db.collection("metadata").document("patient_counter")
 
+    # Create a manual transaction
     tx = db.transaction()
 
-    def register_in_transaction(txn):
-        # ---- GET SLOT COUNT ----
+    @firestore.transactional
+    def register(txn):
+
+        # ---- SLOT SNAPSHOT ----
         slot_snap = txn.get(slot_ref)
-        if slot_snap.exists:
-            current_count = slot_snap.to_dict().get("count", 0)
-        else:
-            current_count = 0
+        current_count = slot_snap.get("count", 0) if slot_snap.exists else 0
 
         # ---- CAPACITY CHECK ----
         cap = DEPARTMENT_SLOTS.get(data["department"], {}).get("capacity", 5)
         if current_count >= cap:
             raise ValueError("Slot is full.")
 
-        # ---- GET CURRENT PATIENT COUNTER ----
+        # ---- COUNTER SNAPSHOT ----
         counter_snap = txn.get(counter_ref)
-        if counter_snap.exists:
-            new_num = counter_snap.to_dict().get("count", 1000) + 1
-        else:
-            new_num = 1001
+        new_num = counter_snap.get("count", 1000) + 1 if counter_snap.exists else 1001
 
         pid = f"P{new_num}"
 
@@ -236,9 +233,9 @@ def attempt_registration_tx(data: dict):
 
         return pid
 
-    # ---------- RUN TRANSACTION (FINAL FIX) ----------
-    result = tx.call(register_in_transaction)
-    return result
+    # ---- RUN TRANSACTION ----
+    return register(tx)
+
 
 
 
