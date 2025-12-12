@@ -10,6 +10,7 @@ import {
   where,
   getDocs,
 } from "firebase/firestore";
+import { BACKEND_URL } from "./config";
 
 export default function AppointmentPage({ department }) {
   const [formData, setFormData] = useState({
@@ -29,10 +30,12 @@ export default function AppointmentPage({ department }) {
   const [success, setSuccess] = useState(false);
   const [newPatientId, setNewPatientId] = useState(null);
   const [patientSegment, setPatientSegment] = useState(null);
-  const [submitting, setSubmitting] = useState(false);
   const [slotsLeft, setSlotsLeft] = useState(null);
+  const [loading, setLoading] = useState(false);
 
-  // ✅ Doctor schedule (time availability)
+  // -----------------------------
+  // Doctor Schedules & Limits
+  // -----------------------------
   const doctorSchedule = {
     Cardiology: ["09:00", "12:00"],
     Neurology: ["14:00", "17:00"],
@@ -48,7 +51,6 @@ export default function AppointmentPage({ department }) {
     Dentist: ["12:00", "18:00"],
   };
 
-  // ✅ Doctor daily limits
   const doctorLimits = {
     Cardiology: 10,
     Neurology: 8,
@@ -64,91 +66,95 @@ export default function AppointmentPage({ department }) {
     Dentist: 10,
   };
 
-  // ✅ Date/time helpers
   const today = new Date().toISOString().split("T")[0];
-  const now = new Date();
-  const currentTime = now.toISOString().slice(11, 16);
+  const currentTime = new Date().toISOString().slice(11, 16);
 
-  // ✅ Check slot availability whenever date/department changes
+  // --------------------------------------------------
+  // Fetch Slot Availability
+  // --------------------------------------------------
   useEffect(() => {
-    const fetchSlots = async () => {
+    const loadSlots = async () => {
       if (!formData.Department || !formData.RegistrationDate) return;
 
-      const appointmentsRef = collection(db, "patients");
+      const ref = collection(db, "patients");
       const q = query(
-        appointmentsRef,
+        ref,
         where("Department", "==", formData.Department),
         where("RegistrationDate", "==", formData.RegistrationDate)
       );
 
-      const snapshot = await getDocs(q);
-      const bookedCount = snapshot.size;
-      const maxLimit = doctorLimits[formData.Department] || 5;
-      setSlotsLeft(maxLimit - bookedCount);
+      const snap = await getDocs(q);
+      const booked = snap.size;
+      const max = doctorLimits[formData.Department] || 5;
+
+      setSlotsLeft(max - booked);
     };
 
-    fetchSlots();
-  }, [formData.Department, formData.RegistrationDate, doctorLimits]); // ✅ fixed dependency array
+    loadSlots();
+  }, [formData.Department, formData.RegistrationDate]);
 
-  // ✅ Handle form changes
+  // --------------------------------------------------
+  // Handle Input Change
+  // --------------------------------------------------
   const handleChange = (e) => {
     const { name, value } = e.target;
+
+    // Clean phone input
     if (name === "PhoneNumber") {
-      setFormData({
+      return setFormData({
         ...formData,
-        [name]: value.replace(/[^\d+()-\s]/g, ""),
+        PhoneNumber: value.replace(/[^\d+()-\s]/g, ""),
       });
-    } else {
-      setFormData({ ...formData, [name]: value });
     }
+
+    setFormData({ ...formData, [name]: value });
   };
 
-  // ✅ Handle Submit
+  // --------------------------------------------------
+  // Submit Appointment
+  // --------------------------------------------------
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setSubmitting(true);
+    setLoading(true);
     setSuccess(false);
     setNewPatientId(null);
-    setPatientSegment(null);
 
     try {
-      // Step 1: Validate slot availability
-      if (slotsLeft !== null && slotsLeft <= 0) {
-        alert(
-          `❌ Appointment limit reached for ${formData.Department} on ${formData.RegistrationDate}. Please choose another date.`
-        );
-        setSubmitting(false);
+      // Slot Check
+      if (slotsLeft <= 0) {
+        alert("❌ No slots available for selected date.");
         return;
       }
 
-      // Step 2: Validate doctor working hours
-      if (formData.Department && doctorSchedule[formData.Department]) {
-        const [start, end] = doctorSchedule[formData.Department];
-        if (
-          formData.RegistrationTime < start ||
-          formData.RegistrationTime > end
-        ) {
-          alert(
-            `❌ Doctor in ${formData.Department} is only available between ${start} and ${end}. Please choose a valid time.`
-          );
-          setSubmitting(false);
-          return;
-        }
-
-        if (
-          formData.RegistrationDate === today &&
-          formData.RegistrationTime < currentTime
-        ) {
-          alert("❌ You cannot book an appointment in the past.");
-          setSubmitting(false);
-          return;
-        }
+      // Doctor Working Hours Check
+      const [start, end] = doctorSchedule[formData.Department] || [];
+      if (
+        start &&
+        (formData.RegistrationTime < start ||
+          formData.RegistrationTime > end)
+      ) {
+        alert(
+          `❌ Doctor available only between ${start} - ${end}. Choose a valid time.`
+        );
+        return;
       }
 
-      // Step 3: Segmentation API
-      let segmentLabel = null;
+      // No past time today
+      if (
+        formData.RegistrationDate === today &&
+        formData.RegistrationTime < currentTime
+      ) {
+        alert("❌ Cannot book in the past.");
+        return;
+      }
+
+      // --------------------------------------------------
+      // FETCH SEGMENT LABEL FROM FASTAPI
+      // --------------------------------------------------
+      let segmentLabel = "Uncategorized";
+
       try {
-        const res = await fetch("http://localhost:8000/segment", {
+        const segRes = await fetch(`${BACKEND_URL}/segment`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -158,23 +164,26 @@ export default function AppointmentPage({ department }) {
           }),
         });
 
-        const segData = await res.json();
-        if (!segData.error) {
+        const segData = await segRes.json();
+        if (segData.label) {
           segmentLabel = segData.label;
-          setPatientSegment(segmentLabel);
+          setPatientSegment(segData.label);
         }
       } catch (err) {
-        console.error("Segmentation request failed:", err);
+        console.error("Segmentation error:", err);
       }
 
-      // Step 4: Save patient to Firestore
+      // --------------------------------------------------
+      // SAVE PATIENT IN FIREBASE WITH AUTO-ID
+      // --------------------------------------------------
       const counterRef = doc(db, "counters", "patients");
+
       const patientId = await runTransaction(db, async (tx) => {
-        const counterSnap = await tx.get(counterRef);
-        let next = 1;
-        if (counterSnap.exists()) {
-          next = (counterSnap.data().lastId || 0) + 1;
-        }
+        const snap = await tx.get(counterRef);
+
+        const next = snap.exists()
+          ? (snap.data().lastId || 0) + 1
+          : 1;
 
         const id = "P" + String(next).padStart(3, "0");
         const patientRef = doc(db, "patients", id);
@@ -183,23 +192,25 @@ export default function AppointmentPage({ department }) {
         tx.set(patientRef, {
           PatientID: id,
           ...formData,
-          Segment: segmentLabel || "Uncategorized",
+          Segment: segmentLabel,
         });
 
         return id;
       });
 
-      setSuccess(true);
       setNewPatientId(patientId);
+      setSuccess(true);
 
-      // ✅ Step 5: Send WhatsApp confirmation via FastAPI backend
+      // --------------------------------------------------
+      // SEND WHATSAPP CONFIRMATION
+      // --------------------------------------------------
       try {
-        await fetch("http://localhost:8000/register_patient", {
+        await fetch(`${BACKEND_URL}/register_patient`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            name: formData.FirstName + " " + formData.LastName,
-            age: parseInt(formData.Age, 10),
+            name: `${formData.FirstName} ${formData.LastName}`,
+            age: formData.Age,
             gender: formData.Gender,
             phone: formData.PhoneNumber,
             email: formData.Email,
@@ -210,7 +221,7 @@ export default function AppointmentPage({ department }) {
           }),
         });
       } catch (err) {
-        console.error("WhatsApp message failed:", err);
+        console.error("WhatsApp sending failed:", err);
       }
 
       // Reset form
@@ -227,55 +238,33 @@ export default function AppointmentPage({ department }) {
         Age: "",
         Condition: "",
       });
-    } catch (error) {
-      console.error("Save failed:", error);
-      const fallbackId = "P" + Math.floor(Math.random() * 10000);
-      await setDoc(doc(db, "patients", fallbackId), {
-        PatientID: fallbackId,
-        ...formData,
-        Segment: patientSegment || "Uncategorized",
-      });
-      setSuccess(true);
-      setNewPatientId(fallbackId);
-      alert(
-        `⚠ Auto-increment failed, but patient was saved with fallback ID: ${fallbackId}`
-      );
+    } catch (err) {
+      console.error("Save error:", err);
+      alert("Something went wrong. Please try again.");
     } finally {
-      setSubmitting(false);
+      setLoading(false);
     }
   };
 
+  // --------------------------------------------------
+  // UI
+  // --------------------------------------------------
   return (
     <div className="appointment-container">
       <h2>Book an Appointment - {department}</h2>
       <p>Please provide the patient details</p>
 
       <form onSubmit={handleSubmit} className="appointment-form">
-        {/* form fields here (unchanged) */}
+        {/* You will paste your existing form fields here */}
       </form>
 
       {success && (
         <p className="success-message">
-          ✅ Patient registered successfully! <br />
-          <strong>Patient ID:</strong> {newPatientId}
+          ✅ Registered Successfully!
           <br />
+          <strong>Patient ID: {newPatientId}</strong>
           {patientSegment && (
-            <span
-              style={{
-                display: "inline-block",
-                marginTop: "8px",
-                padding: "6px 10px",
-                borderRadius: "6px",
-                backgroundColor:
-                  patientSegment === "Chronic illness patient"
-                    ? "#ffcdd2"
-                    : patientSegment === "Regular patient"
-                    ? "#bbdefb"
-                    : "#c8e6c9",
-              }}
-            >
-              🏷 {patientSegment}
-            </span>
+            <div className="segment-badge">🏷 {patientSegment}</div>
           )}
         </p>
       )}
