@@ -174,10 +174,6 @@ def reset_state(sender: str):
     db.collection("registration_states").document(sender).delete()
 
 def attempt_registration_tx(data: dict):
-    """
-    Clean, guaranteed working Firestore transaction for your structure.
-    """
-
     slot_id = f"{data['department']}_{data['registrationDate']}_{data['registrationTime']}"
     slot_ref = db.collection("appointments").document(slot_id)
     counter_ref = db.collection("metadata").document("patient_counter")
@@ -185,47 +181,35 @@ def attempt_registration_tx(data: dict):
     @firestore.transactional
     def register(txn):
 
-        # ---- READ SLOT DOCUMENT ----
         slot_snap = txn.get(slot_ref)
-        if slot_snap.exists:
-            current_count = slot_snap.to_dict().get("count", 0)
-        else:
-            current_count = 0
+        current_count = slot_snap.to_dict().get("count", 0) if slot_snap.exists else 0
 
-        # ---- CAPACITY CHECK ----
         cap = DEPARTMENT_SLOTS[data["department"]]["capacity"]
         if current_count >= cap:
             raise ValueError("Slot is full")
 
-        # ---- READ PATIENT COUNTER ----
         counter_snap = txn.get(counter_ref)
-        if counter_snap.exists:
-            new_num = counter_snap.to_dict().get("count", 1000) + 1
-        else:
-            new_num = 1001
+        new_num = (counter_snap.to_dict().get("count", 1000) if counter_snap.exists else 1000) + 1
 
         pid = f"P{new_num}"
 
-        # ---- UPDATE PATIENT COUNTER ----
         txn.set(counter_ref, {"count": new_num}, merge=True)
 
-        # ---- SAVE PATIENT ----
         patient_ref = db.collection("patients").document(pid)
         txn.set(patient_ref, {
             "PatientID": pid,
-            "FirstName": data.get("firstName", ""),
-            "LastName": data.get("lastName", ""),
-            "Gender": data.get("gender", ""),
-            "Address": data.get("address", ""),
-            "PhoneNumber": data.get("phoneNumber", ""),
-            "Email": data.get("email", ""),
-            "Department": data.get("department", ""),
-            "RegistrationDate": data.get("registrationDate", ""),
-            "RegistrationTime": data.get("registrationTime", ""),
+            "FirstName": data.get("firstName"),
+            "LastName": data.get("lastName"),
+            "Gender": data.get("gender"),
+            "Address": data.get("address"),
+            "PhoneNumber": data.get("phoneNumber"),
+            "Email": data.get("email"),
+            "Department": data.get("department"),
+            "RegistrationDate": data.get("registrationDate"),
+            "RegistrationTime": data.get("registrationTime"),
             "createdAt": firestore.SERVER_TIMESTAMP
         })
 
-        # ---- UPDATE SLOT COUNT ----
         txn.set(slot_ref, {
             "department": data["department"],
             "date": data["registrationDate"],
@@ -235,8 +219,10 @@ def attempt_registration_tx(data: dict):
 
         return pid
 
-    # ❗ Correct call - pass db (client), not db.transaction()
-    return register(db)
+    # 👉 FINAL: Proper working call
+    txn = db.transaction()
+    return register(txn)
+
 
 
 
