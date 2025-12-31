@@ -79,7 +79,7 @@ export default function HomePage() {
           <img src="https://static.vecteezy.com/system/resources/thumbnails/036/372/442/small/hospital-building-with-ambulance-emergency-car-on-cityscape-background-cartoon-illustration-vector.jpg" alt="Hospital" className="hospital-image" />
           <div className="predict-box">
             <h3>📊 Patient Prediction</h3>
-            <p>Get insights into the expected patient count for the selected date. Helps in planning the date and time of the visit.</p>
+            <p>Get insights into the expected patient count for the selected date. Helps in planning the date and time of the visit.We hope you will have best experience at our place. Serving your problems is our responsibility</p>
             <div className="graph-placeholder"></div>
             <button className="predict-btn" onClick={() => navigate("/predict")}>Predict Patient Count</button>
           </div>
@@ -102,87 +102,11 @@ export default function HomePage() {
         <footer className="hospital-info">
           <h2 style={{ textAlign: "center" }}>About Our Hospital</h2>
           <p style={{ textAlign: "center" }}>
-            SDM Multispeciality Hospital, Ujire, provides comprehensive healthcare services with state-of-the-art facilities and expert doctors.
+            NovaMEd Multispeciality Hospital, provides comprehensive healthcare services with state-of-the-art facilities and expert doctors.
           </p>
         </footer>
 
-        {/* Floating Chatbot Button */}
-        <div
-          className="chatbot-toggle"
-          onClick={() => setIsOpen(!isOpen)}
-          style={{
-            position: "fixed",
-            bottom: "20px",
-            right: "20px",
-            backgroundColor: "#0066cc",
-            color: "white",
-            borderRadius: "50%",
-            width: "60px",
-            height: "60px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: "28px",
-            cursor: "pointer",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
-            zIndex: 9999,
-          }}
-        >
-          💬
-        </div>
-
-        {/* Chatbot Window */}
-        {isOpen && (
-          <div
-            className="chatbot-window"
-            style={{
-              position: "fixed",
-              bottom: "90px",
-              right: "20px",
-              width: "340px",
-              height: "420px",
-              backgroundColor: "#fff",
-              borderRadius: "10px",
-              boxShadow: "0 4px 10px rgba(0,0,0,0.2)",
-              display: "flex",
-              flexDirection: "column",
-              overflow: "hidden",
-              zIndex: 10000,
-            }}
-          >
-            <div style={{ backgroundColor: "#0066cc", color: "white", padding: "10px", textAlign: "center" }}>🩺 Nova Assistant</div>
-
-            <div style={{ flex: 1, padding: "10px", overflowY: "auto", background: "#f9f9f9" }}>
-              {messages.map((msg, idx) => (
-                <div key={idx} style={{ textAlign: msg.from === "bot" ? "left" : "right", margin: "6px 0" }}>
-                  <div style={{
-                    display: "inline-block",
-                    backgroundColor: msg.from === "bot" ? "#e0e0e0" : "#0066cc",
-                    color: msg.from === "bot" ? "black" : "white",
-                    padding: "8px 12px",
-                    borderRadius: "10px",
-                    maxWidth: "80%",
-                    wordBreak: "break-word"
-                  }}>
-                    {msg.text}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div style={{ display: "flex", padding: "8px", background: "#eee" }}>
-              <input
-                type="text"
-                value={userInput}
-                onChange={(e) => setUserInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSend()}
-                placeholder="Type your message..."
-                style={{ flex: 1, borderRadius: "20px", border: "1px solid #ccc", padding: "8px 12px" }}
-              />
-              <button onClick={handleSend} style={{ marginLeft: "8px", backgroundColor: "#0066cc", color: "white", border: "none", borderRadius: "20px", padding: "8px 14px" }}>Send</button>
-            </div>
-          </div>
-        )}
+        
       </div>
     </div>
   );

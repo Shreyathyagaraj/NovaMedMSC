@@ -1,81 +1,238 @@
-/* Background wrapper */
+/* Page */
 .login-page {
-  position: relative;
-  height: 100vh;
-  width: 100%;
+  min-height: 100vh;
   display: flex;
   justify-content: center;
   align-items: center;
-  overflow: hidden;
+  background: url("https://static.vecteezy.com/system/resources/thumbnails/036/372/442/small/hospital-building-with-ambulance-emergency-car-on-cityscape-background-cartoon-illustration-vector.jpg")
+    center / cover no-repeat;
+  position: relative;
+  font-family: "Segoe UI", sans-serif;
 }
 
-/* Blurred hospital background */
-.login-bg {
+/* Overlay */
+.login-bg-overlay {
   position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  width: 100%;
-  background: url("https://static.vecteezy.com/system/resources/thumbnails/036/372/442/small/hospital-building-with-ambulance-emergency-car-on-cityscape-background-cartoon-illustration-vector.jpg") no-repeat center center/cover;
-  filter: blur(6px);
-  z-index: 0;
+  inset: 0;
+  background: rgba(0, 60, 90, 0.55);
+  backdrop-filter: blur(4px);
 }
 
-/* Login card (clear) */
-.login-box {
+/* Card */
+.login-card {
   position: relative;
   z-index: 1;
-  background: rgba(255, 255, 255, 0.88);
-  padding: 30px;
-  border-radius: 12px;
-  width: 350px;
-  box-shadow: 0px 6px 15px rgba(0,0,0,0.3);
+  width: 380px;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 18px;
+  padding: 35px 30px;
+  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.3);
   text-align: center;
 }
 
-/* Other existing styles */
-.header h1 {
-  font-size: 20px;
-  margin-bottom: 5px;
+/* 🏥 Logo */
+.hospital-logo {
+  width: 80px;
+  height: auto;
+  margin-bottom: 10px;
 }
-.tagline {
+
+/* Branding */
+.brand-title {
+  font-size: 26px;
+  font-weight: 700;
+  color: #0a5f7d;
+  margin-bottom: 4px;
+}
+
+.brand-subtitle {
   font-size: 14px;
-  color: #444;
-  margin-bottom: 20px;
+  color: #555;
+  margin-bottom: 28px;
 }
-.login-btn {
-  background: #007bff;
-  color: #fff;
-  padding: 10px;
+
+/* Inputs */
+.input-group {
+  display: flex;
+  align-items: center;
+  background: #f4f7fa;
+  border-radius: 10px;
+  padding: 12px;
+  border: 1px solid #dce3ea;
+}
+
+.input-group input {
   border: none;
-  border-radius: 6px;
-  width: 100%;
-  margin-top: 15px;
-  cursor: pointer;
+  outline: none;
+  background: transparent;
+  flex: 1;
+  font-size: 14px;
+  padding-left: 10px;
 }
-.login-btn:hover {
-  background: #0056b3;
+
+.input-icon {
+  color: #6b9fb6;
 }
-.social-btn.google {
-  margin-top: 10px;
-  background: #db4437;
+
+/* Buttons */
+.primary-btn {
+  margin-top: 12px;
+  background: linear-gradient(135deg, #0a5f7d, #0f7ea5);
   color: #fff;
-  padding: 10px;
-  border-radius: 6px;
-  width: 100%;
   border: none;
+  padding: 12px;
+  border-radius: 12px;
+  font-weight: 600;
   cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
 }
-.social-btn.google:hover {
-  background: #b5372b;
+
+.primary-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 25px rgba(15, 126, 165, 0.45);
 }
+
+/* Divider */
 .divider {
-  margin: 20px 0;
-  text-align: center;
-  position: relative;
+  display: flex;
+  align-items: center;
+  margin: 22px 0;
 }
+
+.divider::before,
+.divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: #ccc;
+}
+
 .divider span {
-  background: #fff;
   padding: 0 10px;
-  color: #888;
+  font-size: 12px;
+  color: #666;
+}
+
+
+/* Signup */
+.signup-text {
+  margin-top: 18px;
+  font-size: 13px;
+}
+
+.signup-text a {
+  color: #0a5f7d;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+/* ✨ Animation */
+.animate-in {
+  animation: slideFade 0.8s ease-out forwards;
+}
+
+@keyframes slideFade {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Mobile */
+@media (max-width: 420px) {
+  .login-card {
+    width: 90%;
+    padding: 28px 22px;
+  }
+}
+/* Spinner */
+.spinner {
+  width: 22px;
+  height: 22px;
+  border: 3px solid rgba(255, 255, 255, 0.3);
+  border-top: 3px solid white;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  display: inline-block;
+}
+
+.spinner.small {
+  width: 18px;
+  height: 18px;
+  border-width: 2.5px;
+}
+
+/* Spinner animation */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Disable buttons look */
+button:disabled {
+  opacity: 0.75;
+  cursor: not-allowed;
+}
+/* Brand Title */
+.brand-title {
+  font-size: 26px;
+  font-weight: 700;
+  color: #0b4f6c;
+  text-align: center;
+  margin-bottom: 4px;
+}
+
+.brand-title span {
+  display: block;
+  font-size: 18px;
+  font-weight: 500;
+  color: #1b7f9e;
+}
+
+/* Slogan */
+.brand-slogan {
+  font-size: 14px;
+  color: #555;
+  font-style: italic;
+  margin-bottom: 25px;
+  text-align: center;
+}
+
+/* Google Button Wrapper */
+.google-btn-wrapper {
+  display: flex;
+  justify-content: center;
+}
+
+/* Google Button Styling */
+.google-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px;
+  background: linear-gradient(135deg, #4285f4, #34a853);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.google-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.25);
+}
+
+.google-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
 }

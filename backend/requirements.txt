@@ -9,3 +9,6 @@ dateparser
 python-dateutil
 reportlab
 xgboost
+httpx
+fpdf2
+google-cloud-dialogflow

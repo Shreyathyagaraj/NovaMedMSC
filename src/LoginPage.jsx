@@ -1,81 +1,114 @@
 import React, { useState } from "react";
 import "./LoginPage.css";
 import { Link, useNavigate } from "react-router-dom";
-import { FaGoogle } from "react-icons/fa";
-import { signInWithGoogle, auth } from "./firebase"; 
+import { FaGoogle, FaEnvelope, FaLock } from "react-icons/fa";
+import { signInWithGoogle, auth } from "./firebase";
 import { signInWithEmailAndPassword } from "firebase/auth";
 
 export default function LoginPage() {
   const navigate = useNavigate();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [loadingEmail, setLoadingEmail] = useState(false);
+  const [loadingGoogle, setLoadingGoogle] = useState(false);
 
   const handleLogin = async (e) => {
     e.preventDefault();
+    setLoadingEmail(true);
     try {
       await signInWithEmailAndPassword(auth, email, password);
-      alert("Login Successful!");
-      navigate("/home"); // redirect after login
+      navigate("/home");
     } catch (error) {
-      console.error("Login error:", error.message);
       alert(error.message);
+    } finally {
+      setLoadingEmail(false);
     }
   };
 
   const handleGoogleLogin = async () => {
+    setLoadingGoogle(true);
     try {
-      const user = await signInWithGoogle(); 
-      if (user) {
-        alert("Google Login Successful!");
-        navigate("/home");
-      }
+      const user = await signInWithGoogle();
+      if (user) navigate("/home");
     } catch (error) {
-      alert("Google sign-in failed: " + error.message);
+      alert("Google sign-in failed");
+    } finally {
+      setLoadingGoogle(false);
     }
   };
 
   return (
     <div className="login-page">
-      {/* Blurred background */}
-      <div className="login-bg"></div>
+      <div className="login-bg-overlay" />
 
-      {/* Login box */}
-      <div className="login-box">
-        <div className="header">
-          <h1>NovaMed Multispeciality Care</h1>
-          <p className="tagline">"Let there be no true illness"</p>
-        </div>
+      <div className="login-card animate-in">
+        {/* Title */}
+        <h1 className="brand-title">
+          NovaMed <span>Multispeciality Care</span>
+        </h1>
+        <p className="brand-slogan">“There is no true illness”</p>
 
-        <form onSubmit={handleLogin} className="form">
-          <label>Email Address</label>
-          <input
-            type="email"
-            placeholder="Enter your email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
+        {/* Email Login */}
+        <form onSubmit={handleLogin} className="login-form">
+          <div className="input-group">
+            <FaEnvelope className="input-icon" />
+            <input
+              type="email"
+              placeholder="Email address"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              disabled={loadingEmail || loadingGoogle}
+            />
+          </div>
 
-          <label>Password</label>
-          <input
-            type="password"
-            placeholder="Enter your password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
+          <div className="input-group">
+            <FaLock className="input-icon" />
+            <input
+              type="password"
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              disabled={loadingEmail || loadingGoogle}
+            />
+          </div>
 
-          <button type="submit" className="login-btn">Login</button>
+          <button
+            type="submit"
+            className="primary-btn"
+            disabled={loadingEmail}
+          >
+            {loadingEmail ? <span className="spinner" /> : "Sign In"}
+          </button>
         </form>
 
-        <div className="divider"><span>or</span></div>
+        {/* Divider */}
+        <div className="divider">
+          <span>OR</span>
+        </div>
 
-        <button className="social-btn google" onClick={handleGoogleLogin}>
-          <FaGoogle className="icon" /> Continue with Google
-        </button>
+        {/* Google Login */}
+        <div className="google-btn-wrapper">
+          <button
+            className="google-btn"
+            onClick={handleGoogleLogin}
+            disabled={loadingGoogle}
+          >
+            {loadingGoogle ? (
+              <span className="spinner small" />
+            ) : (
+              <>
+                <FaGoogle />
+                <span>Continue with Google</span>
+              </>
+            )}
+          </button>
+        </div>
 
         <p className="signup-text">
-          Don’t have an account? <Link to="/signup">Sign up</Link>
+          Don’t have an account? <Link to="/signup">Create one</Link>
         </p>
       </div>
     </div>

@@ -4,7 +4,6 @@ import { db } from "./firebase";
 import {
   doc,
   runTransaction,
-  setDoc,
   collection,
   query,
   where,
@@ -13,6 +12,9 @@ import {
 import { BACKEND_URL } from "./config";
 
 export default function AppointmentPage({ department }) {
+  const today = new Date().toISOString().split("T")[0];
+  const nowTime = new Date().toTimeString().slice(0, 5);
+
   const [formData, setFormData] = useState({
     FirstName: "",
     LastName: "",
@@ -27,310 +29,220 @@ export default function AppointmentPage({ department }) {
   });
 
   const [slotsLeft, setSlotsLeft] = useState(null);
+  const [timeSlots, setTimeSlots] = useState([]);
   const [success, setSuccess] = useState(false);
   const [newPatientId, setNewPatientId] = useState(null);
-  const [timeSlots, setTimeSlots] = useState([]);
   const [loading, setLoading] = useState(false);
-  const today = new Date().toISOString().split("T")[0];
 
-  // ---------------------------
-  // Doctor Schedules
-  // ---------------------------
+  // ---------------- DOCTOR CONFIG ----------------
   const doctorSchedule = {
-    "General Surgeon": ["09:00", "12:00"],
+    "General surgeon": ["12:00", "16:00"],
     Orthopedics: ["10:00", "13:00"],
+    Ophthalmology: ["09:00", "12:00"],
+    Gynecology: ["10:00", "12:00"],
+    "ENT Specialist": ["14:00", "17:00"],
+    Anaesthesiology: ["10:00", "13:00"],
     Pediatrics: ["15:00", "18:00"],
-    "ENT Specialist": ["11:00", "16:00"],
-    Dermatology: ["09:00", "18:00"],
     Physician: ["09:00", "12:00"],
+    Dermatology: ["09:00", "18:00"],
+    Dentist: ["09:00", "12:00"],
   };
 
   const doctorLimits = {
-    "General Surgeon": 5,
-    Orthopedics: 6,
+    "General surgeon": 3,
+    Orthopedics: 9,
+    Ophthalmology: 10,
+    Gynecology: 2,
+    "ENT Specialist": 8,
+    Anaesthesiology: 6,
     Pediatrics: 12,
-    "ENT Specialist": 7,
-    Dermatology: 15,
     Physician: 10,
+    Dermatology: 15,
+    Dentist: 12,
   };
 
-  // ----------------------------------------------------------
-  // Generate timeslot buttons (every 30 min)
-  // ----------------------------------------------------------
+  // ---------------- SLOT GENERATION ----------------
   const generateSlots = (start, end) => {
     const slots = [];
     let [h, m] = start.split(":").map(Number);
-    const [endH, endM] = end.split(":").map(Number);
+    const [eh, em] = end.split(":").map(Number);
 
-    while (h < endH || (h === endH && m <= endM)) {
-      const hh = h.toString().padStart(2, "0");
-      const mm = m.toString().padStart(2, "0");
-      slots.push(`${hh}:${mm}`);
+    while (h < eh || (h === eh && m < em)) {
+      slots.push(`${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`);
       m += 30;
       if (m >= 60) {
         h++;
-        m -= 60;
+        m = 0;
       }
     }
-
     return slots;
   };
 
-  // ----------------------------------------------------------
-  // Load Timeslots When Department is Selected
-  // ----------------------------------------------------------
+  // ---------------- LOAD TIME SLOTS ----------------
   useEffect(() => {
     if (!formData.Department) return;
-
     const schedule = doctorSchedule[formData.Department];
-    if (!schedule) {
-      setTimeSlots([]);
-      return;
-    }
-
-    const [start, end] = schedule;
-    setTimeSlots(generateSlots(start, end));
+    if (!schedule) return;
+    setTimeSlots(generateSlots(schedule[0], schedule[1]));
   }, [formData.Department]);
 
-  // ----------------------------------------------------------
-  // Load slot availability per date
-  // ----------------------------------------------------------
+  // ---------------- FETCH SLOT COUNT ----------------
   useEffect(() => {
     const fetchSlots = async () => {
       if (!formData.Department || !formData.RegistrationDate) return;
 
-      const appointmentsRef = collection(db, "patients");
       const q = query(
-        appointmentsRef,
+        collection(db, "patients"),
         where("Department", "==", formData.Department),
         where("RegistrationDate", "==", formData.RegistrationDate)
       );
 
-      const snapshot = await getDocs(q);
-      const bookedCount = snapshot.size;
-      const maxLimit = doctorLimits[formData.Department] || 5;
-      setSlotsLeft(maxLimit - bookedCount);
+      const snap = await getDocs(q);
+      const max = doctorLimits[formData.Department] || 0;
+      setSlotsLeft(max - snap.size);
     };
 
     fetchSlots();
   }, [formData.Department, formData.RegistrationDate]);
 
-  // ----------------------------------------------------------
-  // Handle change
-  // ----------------------------------------------------------
+  // ---------------- HANDLE CHANGE ----------------
   const handleChange = (e) => {
     const { name, value } = e.target;
-
-    // Clean phone input
-    if (name === "PhoneNumber") {
-      setFormData({
-        ...formData,
-        PhoneNumber: value.replace(/[^\d+()-\s]/g, ""),
-      });
-      return;
-    }
-
     setFormData({ ...formData, [name]: value });
   };
 
-  // ----------------------------------------------------------
-  // Submit Appointment
-  // ----------------------------------------------------------
+  // ---------------- SUBMIT ----------------
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    if (!formData.RegistrationTime) {
+      alert("Please select a time slot");
+      return;
+    }
+
+    if (slotsLeft <= 0) {
+      alert("No slots available for this date");
+      return;
+    }
+
     setLoading(true);
 
     try {
-      if (!formData.RegistrationTime) {
-        alert("Please select a time slot");
-        setLoading(false);
-        return;
-      }
-
-      if (slotsLeft <= 0) {
-        alert("No slots available for selected date");
-        setLoading(false);
-        return;
-      }
-
-      // SAVE PATIENT IN FIREBASE
       const counterRef = doc(db, "counters", "patients");
 
       const patientId = await runTransaction(db, async (tx) => {
         const snap = await tx.get(counterRef);
         const next = snap.exists() ? (snap.data().lastId || 0) + 1 : 1;
-
-        const id = "P" + String(next).padStart(3, "0");
-        const patientRef = doc(db, "patients", id);
+        const pid = "P" + String(next).padStart(3, "0");
 
         tx.set(counterRef, { lastId: next }, { merge: true });
-        tx.set(patientRef, {
-          PatientID: id,
+        tx.set(doc(db, "patients", pid), {
+          PatientID: pid,
           ...formData,
         });
 
-        return id;
+        return pid;
       });
 
       setNewPatientId(patientId);
       setSuccess(true);
 
-      // SEND WHATSAPP CONFIRMATION
       await fetch(`${BACKEND_URL}/register_patient`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: `${formData.FirstName} ${formData.LastName}`,
-          age: formData.Age,
-          gender: formData.Gender,
-          phone: formData.PhoneNumber,
-          email: formData.Email,
-          address: formData.Address,
-          appointment_date: formData.RegistrationDate,
-          department: formData.Department,
-          doctor: "Dr. Assigned",
-        }),
+        body: JSON.stringify(formData),
       });
 
-      // RESET FORM
-      setFormData({
-        FirstName: "",
-        LastName: "",
-        Gender: "",
-        Address: "",
-        RegistrationDate: "",
-        RegistrationTime: "",
-        PhoneNumber: "",
-        Email: "",
-        Department: department || "",
-        Age: "",
-      });
     } catch (err) {
       console.error(err);
-      alert("Something went wrong!");
+      alert("Something went wrong");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="appointment-container">
-      <h2>Book an Appointment - {formData.Department}</h2>
-      <p>Please provide the patient details</p>
+    <div className="appointment-page">
+      <div className="appointment-card">
+        <h2>Book Appointment</h2>
+        <p className="subtitle">{formData.Department}</p>
 
-      <form onSubmit={handleSubmit} className="appointment-form">
-        
-        {/* FIRST NAME */}
-        <label>First Name *</label>
-        <input
-          name="FirstName"
-          value={formData.FirstName}
-          onChange={handleChange}
-          required
-        />
+        <form onSubmit={handleSubmit}>
+          <label>First Name *</label>
+          <input required name="FirstName" onChange={handleChange} />
 
-        {/* LAST NAME */}
-        <label>Last Name *</label>
-        <input
-          name="LastName"
-          value={formData.LastName}
-          onChange={handleChange}
-          required
-        />
+          <label>Last Name *</label>
+          <input required name="LastName" onChange={handleChange} />
 
-        {/* GENDER */}
-        <label>Gender *</label>
-        <select name="Gender" required value={formData.Gender} onChange={handleChange}>
-          <option value="">Select</option>
-          <option>Male</option>
-          <option>Female</option>
-          <option>Other</option>
-        </select>
+          <label>Gender *</label>
+          <select required name="Gender" onChange={handleChange}>
+            <option value="">Select</option>
+            <option>Male</option>
+            <option>Female</option>
+            <option>Other</option>
+          </select>
 
-        {/* ADDRESS */}
-        <label>Address *</label>
-        <textarea
-          name="Address"
-          required
-          value={formData.Address}
-          onChange={handleChange}
-        />
+          <label>Address *</label>
+          <textarea required name="Address" onChange={handleChange} />
 
-        {/* DATE */}
-        <label>Date *</label>
-        <input
-          type="date"
-          required
-          name="RegistrationDate"
-          value={formData.RegistrationDate}
-          min={today}
-          onChange={handleChange}
-        />
+          <label>Date *</label>
+          <input
+            type="date"
+            min={today}
+            required
+            name="RegistrationDate"
+            onChange={handleChange}
+          />
 
-        {/* TIME SLOTS */}
-        <label>Time *</label>
-        <div className="time-slot-container">
-          {timeSlots.map((slot) => {
-            const isPast =
-              formData.RegistrationDate === today &&
-              slot < new Date().toISOString().slice(11, 16);
+          <label>Available Time Slots</label>
+          <div className="slots-grid">
+            {timeSlots.map((slot) => {
+              const isPast =
+                formData.RegistrationDate === today && slot <= nowTime;
 
-            return (
-              <button
-                type="button"
-                key={slot}
-                className={`time-slot ${
-                  formData.RegistrationTime === slot ? "selected" : ""
-                } ${isPast ? "disabled" : ""}`}
-                disabled={isPast}
-                onClick={() =>
-                  setFormData({ ...formData, RegistrationTime: slot })
-                }
-              >
-                {slot}
-              </button>
-            );
-          })}
-        </div>
+              return (
+                <button
+                  key={slot}
+                  type="button"
+                  disabled={isPast || slotsLeft <= 0}
+                  className={`slot ${
+                    formData.RegistrationTime === slot ? "active" : ""
+                  }`}
+                  onClick={() =>
+                    setFormData({ ...formData, RegistrationTime: slot })
+                  }
+                >
+                  {slot}
+                </button>
+              );
+            })}
+          </div>
 
-        {/* PHONE */}
-        <label>Phone Number *</label>
-        <input
-          name="PhoneNumber"
-          required
-          value={formData.PhoneNumber}
-          onChange={handleChange}
-        />
+          {slotsLeft !== null && (
+            <span className="left">Only {slotsLeft} slots left</span>
+          )}
 
-        {/* EMAIL */}
-        <label>Email (Optional)</label>
-        <input
-          name="Email"
-          value={formData.Email}
-          onChange={handleChange}
-        />
+          <label>Phone *</label>
+          <input required name="PhoneNumber" onChange={handleChange} />
 
-        {/* AGE */}
-        <label>Age *</label>
-        <input
-          type="number"
-          name="Age"
-          required
-          value={formData.Age}
-          onChange={handleChange}
-        />
+          <label>Email</label>
+          <input name="Email" onChange={handleChange} />
 
-        <button disabled={loading} className="submit-btn">
-          {loading ? "Submitting..." : "Book Appointment"}
-        </button>
-      </form>
+          <label>Age *</label>
+          <input type="number" required name="Age" onChange={handleChange} />
 
-      {success && (
-        <p className="success-message">
-          ✅ Registered Successfully! <br />
-          <strong>Patient ID: {newPatientId}</strong>
-        </p>
-      )}
+          <button className="confirm-btn" disabled={loading}>
+            {loading ? "Booking..." : "Confirm Appointment"}
+          </button>
+        </form>
+
+        {success && (
+          <div className="success">
+            ✅ Appointment Confirmed <br />
+            <strong>Patient ID: {newPatientId}</strong>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -101,3 +101,90 @@ textarea {
   text-align: center;
   font-weight: 600;
 }
+.appointment-page {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #e3f2fd, #f1f8ff);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.appointment-card {
+  background: #ffffff;
+  padding: 25px;
+  width: 420px;
+  border-radius: 14px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+}
+
+.subtitle {
+  text-align: center;
+  color: #555;
+  margin-bottom: 15px;
+}
+
+label {
+  font-weight: 600;
+  margin-top: 12px;
+  display: block;
+}
+
+input, select, textarea {
+  width: 100%;
+  padding: 10px;
+  margin-top: 6px;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+}
+
+.slots-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.slot {
+  padding: 10px;
+  border-radius: 8px;
+  background: #e3f2fd;
+  border: 1px solid #90caf9;
+  cursor: pointer;
+}
+
+.slot:hover {
+  background: #bbdefb;
+}
+
+.slot.active {
+  background: #1976d2;
+  color: white;
+}
+
+.confirm-btn {
+  margin-top: 20px;
+  width: 100%;
+  padding: 12px;
+  background: #2e7d32;
+  color: white;
+  border: none;
+  border-radius: 8px;
+}
+
+.confirm-btn:disabled {
+  background: #a5d6a7;
+}
+
+.left {
+  font-size: 12px;
+  color: #555;
+  margin-top: 6px;
+  display: block;
+}
+
+.success {
+  margin-top: 15px;
+  text-align: center;
+  color: #2e7d32;
+  font-weight: bold;
+}
