@@ -10,7 +10,7 @@ from firebase_admin import firestore
 import dateparser
 
 from firebase_config import init_firebase
-from report_utils import generate_report_pdf   # ✅ PDF generator
+from report_utils import generate_report_pdf
 
 # ---------------- INIT ----------------
 db = init_firebase()
@@ -23,8 +23,7 @@ logger = logging.getLogger("webhook")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "shreyaWebhook123")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
-
-REPORT_PDF_URL = os.getenv("REPORT_PDF_URL")  # e.g. https://xyz.onrender.com
+REPORT_PDF_URL = os.getenv("REPORT_PDF_URL")  # https://your-backend-url
 
 WA_API = f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages"
 
@@ -89,7 +88,7 @@ async def send_list(to: str, body: str, rows: List[Dict[str, str]]):
         },
     })
 
-async def send_document(to: str, url: str, filename):
+async def send_document(to: str, url: str, filename: str):
     await wa_post({
         "messaging_product": "whatsapp",
         "to": to,
@@ -107,41 +106,50 @@ def generate_slots(start: str, end: str):
         t += timedelta(minutes=30)
     return slots
 
+def generate_patient_id():
+    ref = db.collection("metadata").document("patient_counter")
+
+    @firestore.transactional
+    def txn(transaction):
+        snap = ref.get(transaction=transaction)
+        count = snap.to_dict().get("count", 1000) + 1 if snap.exists else 1001
+        transaction.set(ref, {"count": count})
+        return f"P{count}"
+
+    return txn(db.transaction())
+
 # ---------------- STATE ----------------
-def get_state(sender: str):
+def get_state(sender):
     ref = db.collection("registration_states").document(sender)
     snap = ref.get()
-    if not snap.exists:
-        return {"step": None, "data": {}}
-    return snap.to_dict()
+    return snap.to_dict() if snap.exists else {"step": None, "data": {}}
 
-def set_state(sender: str, step: str, data: dict):
+def set_state(sender, step, data):
     db.collection("registration_states").document(sender).set({
         "step": step,
         "data": data,
         "updatedAt": firestore.SERVER_TIMESTAMP
     })
 
-def reset_state(sender: str):
+def reset_state(sender):
     db.collection("registration_states").document(sender).delete()
 
 # ---------------- MENU ----------------
-async def show_menu(sender: str):
-    await send_buttons(sender, "🏥 *NovaMed Multispeciality Care*\nChoose an option:", [
+async def show_menu(sender):
+    await send_buttons(sender, "🏥 *NovaMed Multispeciality Care*", [
         {"id": "book", "title": "📅 Book Appointment"},
         {"id": "report", "title": "📄 Get Report"},
     ])
     set_state(sender, "menu", {})
 
 # ---------------- MAIN FLOW ----------------
-async def process_message(sender: str, text: str, msg: dict):
-    text_l = text.lower().strip()
+async def process_message(sender, text, msg):
+    now = datetime.now()
     state = get_state(sender)
     step = state.get("step")
     data = state.get("data", {})
-    now = datetime.now()
 
-    if text_l in ["hi", "hello", "menu", "restart"]:
+    if text.lower() in ["hi", "hello", "menu", "restart"]:
         reset_state(sender)
         await show_menu(sender)
         return
@@ -150,51 +158,37 @@ async def process_message(sender: str, text: str, msg: dict):
         await show_menu(sender)
         return
 
-    # -------- MENU --------
     if step == "menu":
-        bid = msg.get("interactive", {}).get("button_reply", {}).get("id")
+        bid = msg["interactive"]["button_reply"]["id"]
         if bid == "book":
             set_state(sender, "first", {})
             await send_text(sender, "👤 Enter *First Name*:")
-        elif bid == "report":
+        else:
             set_state(sender, "report", {})
             await send_text(sender, "🆔 Enter *Patient ID*:")
         return
 
-    # -------- REPORT --------
     if step == "report":
         pid = text.upper()
         doc = db.collection("patients").document(pid).get()
-
         if not doc.exists:
             await send_text(sender, "❌ Patient ID not found.")
             reset_state(sender)
             return
 
         patient = doc.to_dict()
-
-        # ✅ Generate PDF
         generate_report_pdf(patient)
 
-        await send_text(
-            sender,
+        await send_text(sender,
             f"👤 *{patient['FirstName']} {patient['LastName']}*\n"
-            f"🏥 Dept: {patient['Department']}\n"
-            f"📅 Date: {patient['RegistrationDate']}\n"
-            f"⏰ Time: {patient['RegistrationTime']}"
+            f"🏥 {patient['Department']}\n"
+            f"📅 {patient['RegistrationDate']} ⏰ {patient['RegistrationTime']}"
         )
 
-        if REPORT_PDF_URL:
-            await send_document(
-                sender,
-                f"{REPORT_PDF_URL}/reports/{pid}",
-                f"{pid}.pdf"
-            )
-
+        await send_document(sender, f"{REPORT_PDF_URL}/reports/{pid}", f"{pid}.pdf")
         reset_state(sender)
         return
 
-    # -------- BOOKING --------
     if step == "first":
         data["first"] = text.title()
         set_state(sender, "last", data)
@@ -203,9 +197,8 @@ async def process_message(sender: str, text: str, msg: dict):
 
     if step == "last":
         data["last"] = text.title()
-        rows = [{"id": d, "title": d} for d in DEPARTMENTS]
         set_state(sender, "department", data)
-        await send_list(sender, "🏥 Select Department:", rows)
+        await send_list(sender, "🏥 Select Department:", [{"id": d, "title": d} for d in DEPARTMENTS])
         return
 
     if step == "department":
@@ -221,42 +214,33 @@ async def process_message(sender: str, text: str, msg: dict):
             return
 
         data["date"] = parsed.strftime("%Y-%m-%d")
-        dept = data["department"]
-        start, end = doctorSchedule[dept]
-        slots = generate_slots(start, end)
+        slots = generate_slots(*doctorSchedule[data["department"]])
 
-        booked = db.collection("patients") \
-            .where("Department", "==", dept) \
-            .where("RegistrationDate", "==", data["date"]) \
-            .stream()
+        booked = db.collection("patients")\
+            .where("Department", "==", data["department"])\
+            .where("RegistrationDate", "==", data["date"]).stream()
 
         used = [p.to_dict()["RegistrationTime"] for p in booked]
 
-        available = []
-        for s in slots:
-            slot_dt = datetime.strptime(f"{data['date']} {s}", "%Y-%m-%d %H:%M")
-            if slot_dt > now and s not in used:
-                available.append(s)
+        available = [
+            s for s in slots
+            if datetime.strptime(f"{data['date']} {s}", "%Y-%m-%d %H:%M") > now
+            and s not in used
+        ]
 
         if not available:
             await send_text(sender, "❌ No future slots available.")
             reset_state(sender)
             return
 
-        buttons = [{"id": s, "title": s} for s in available[:3]]
         set_state(sender, "time", data)
-        await send_buttons(sender, f"⏰ Available slots ({len(available)} left):", buttons)
+        await send_buttons(sender, "⏰ Select Time:", [{"id": s, "title": s} for s in available[:3]])
         return
 
     if step == "time":
         time = msg["interactive"]["button_reply"]["id"]
-        appt_dt = datetime.strptime(f"{data['date']} {time}", "%Y-%m-%d %H:%M")
+        pid = generate_patient_id()
 
-        if appt_dt <= now:
-            await send_text(sender, "❌ Past time not allowed.")
-            return
-
-        pid = f"P{int(datetime.utcnow().timestamp())}"
         db.collection("patients").document(pid).set({
             "PatientID": pid,
             "FirstName": data["first"],
@@ -267,11 +251,8 @@ async def process_message(sender: str, text: str, msg: dict):
             "Phone": sender,
         })
 
-        await send_text(
-            sender,
-            f"✅ *Appointment Confirmed!*\n"
-            f"🆔 Patient ID: {pid}\n"
-            f"📅 {data['date']} ⏰ {time}"
+        await send_text(sender,
+            f"✅ *Appointment Confirmed!*\n🆔 {pid}\n📅 {data['date']} ⏰ {time}"
         )
         reset_state(sender)
 
@@ -285,22 +266,15 @@ async def verify(request: Request):
 @router.post("/webhook")
 async def receive(request: Request):
     body = await request.json()
-    logger.info("Webhook payload: %s", body)
-
     value = body.get("entry", [{}])[0].get("changes", [{}])[0].get("value", {})
     if "messages" not in value:
         return {"status": "ignored"}
 
     msg = value["messages"][0]
     sender = msg["from"]
-
-    text = ""
-    if msg.get("text"):
-        text = msg["text"]["body"]
-    elif msg.get("interactive"):
-        it = msg["interactive"]
-        text = it.get("button_reply", {}).get("title", "") or \
-               it.get("list_reply", {}).get("title", "")
+    text = msg.get("text", {}).get("body", "") or \
+           msg.get("interactive", {}).get("button_reply", {}).get("title", "") or \
+           msg.get("interactive", {}).get("list_reply", {}).get("title", "")
 
     await process_message(sender, text, msg)
     return {"status": "ok"}
