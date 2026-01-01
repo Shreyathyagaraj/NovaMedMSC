@@ -23,9 +23,7 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "shreyaWebhook123")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 
-# Your own backend services (NO Dialogflow)
-NLP_SUPPORT_URL = os.getenv("NLP_SUPPORT_URL")      # e.g. https://your-api/support
-REPORT_PDF_URL = os.getenv("REPORT_PDF_URL")        # e.g. https://your-api/reports
+REPORT_PDF_URL = os.getenv("REPORT_PDF_URL")  # https://your-backend/reports
 
 WA_API = f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages"
 
@@ -108,14 +106,6 @@ async def send_document(to: str, url: str, filename="report.pdf"):
     })
 
 # ---------------- UTIL ----------------
-def normalize_phone(p: str):
-    digits = re.sub(r"\D", "", p)
-    if len(digits) == 10:
-        return "+91" + digits
-    if len(digits) > 10:
-        return "+" + digits
-    return None
-
 def generate_slots(start: str, end: str):
     slots = []
     t = datetime.strptime(start, "%H:%M")
@@ -153,10 +143,9 @@ def reset_state(sender: str):
 
 # ---------------- MENU ----------------
 async def show_menu(sender: str):
-    await send_buttons(sender, "🏥 *Welcome to NovaMed*\nChoose an option:", [
+    await send_buttons(sender, "🏥 *NovaMed Multispeciality Care*\nChoose an option:", [
         {"id": "book", "title": "📅 Book Appointment"},
         {"id": "report", "title": "📄 Get Report"},
-        {"id": "support", "title": "💬 Support"},
     ])
     set_state(sender, "menu", {})
 
@@ -186,22 +175,6 @@ async def process_message(sender: str, text: str, msg: dict):
         elif bid == "report":
             set_state(sender, "report", {})
             await send_text(sender, "🆔 Enter *Patient ID* (e.g. P1012):")
-        elif bid == "support":
-            set_state(sender, "support", {})
-            await send_text(sender, "💬 Ask your question. Type *menu* to exit.")
-        return
-
-    # -------- SUPPORT --------
-    if step == "support":
-        if not NLP_SUPPORT_URL:
-            await send_text(sender, "⚠️ Support service not configured.")
-            return
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.post(NLP_SUPPORT_URL, json={"query": text})
-                await send_text(sender, r.json().get("answer", "Please be more specific."))
-        except Exception:
-            await send_text(sender, "⚠️ Support is temporarily unavailable.")
         return
 
     # -------- REPORT --------
@@ -211,6 +184,7 @@ async def process_message(sender: str, text: str, msg: dict):
         if not doc.exists:
             await send_text(sender, "❌ Patient ID not found. Type *menu*.")
             return
+
         p = doc.to_dict()
         await send_text(
             sender,
@@ -219,8 +193,13 @@ async def process_message(sender: str, text: str, msg: dict):
             f"📅 Date: {p['RegistrationDate']}\n"
             f"⏰ Time: {p['RegistrationTime']}"
         )
+
         if REPORT_PDF_URL:
-            await send_document(sender, f"{REPORT_PDF_URL}/{pid}", f"{pid}.pdf")
+            try:
+                await send_document(sender, f"{REPORT_PDF_URL}/{pid}", f"{pid}.pdf")
+            except Exception:
+                await send_text(sender, "⚠️ Report PDF currently unavailable.")
+
         reset_state(sender)
         return
 
@@ -249,8 +228,8 @@ async def process_message(sender: str, text: str, msg: dict):
         if not parsed or parsed.date() < now.date():
             await send_text(sender, "❌ Invalid or past date.")
             return
-        data["date"] = parsed.strftime("%Y-%m-%d")
 
+        data["date"] = parsed.strftime("%Y-%m-%d")
         dept = data["department"]
         start, end = doctorSchedule[dept]
         slots = generate_slots(start, end)
@@ -261,10 +240,16 @@ async def process_message(sender: str, text: str, msg: dict):
             .stream()
 
         used = [p.to_dict()["RegistrationTime"] for p in booked]
-        available = [s for s in slots if s not in used]
+
+        # ⛔ FILTER PAST TIMES FOR TODAY
+        available = []
+        for s in slots:
+            slot_dt = datetime.strptime(f"{data['date']} {s}", "%Y-%m-%d %H:%M")
+            if slot_dt > now and s not in used:
+                available.append(s)
 
         if not available:
-            await send_text(sender, "❌ No slots available for this date.")
+            await send_text(sender, "❌ No future slots available.")
             reset_state(sender)
             return
 
@@ -276,7 +261,8 @@ async def process_message(sender: str, text: str, msg: dict):
     if step == "time":
         time = msg["interactive"]["button_reply"]["id"]
         appt_dt = datetime.strptime(f"{data['date']} {time}", "%Y-%m-%d %H:%M")
-        if appt_dt < now:
+
+        if appt_dt <= now:
             await send_text(sender, "❌ Past time not allowed.")
             return
 
@@ -289,7 +275,6 @@ async def process_message(sender: str, text: str, msg: dict):
             "RegistrationDate": data["date"],
             "RegistrationTime": time,
             "Phone": sender,
-            "ReminderAt": appt_dt - timedelta(minutes=10),
         })
 
         await send_text(
@@ -297,7 +282,7 @@ async def process_message(sender: str, text: str, msg: dict):
             f"✅ *Appointment Confirmed!*\n"
             f"🆔 Patient ID: {pid}\n"
             f"📅 {data['date']} ⏰ {time}\n"
-            f"Please arrive *5 minutes early*."
+            f"Please arrive 5 minutes early."
         )
         reset_state(sender)
 
