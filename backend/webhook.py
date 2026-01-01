@@ -1,6 +1,6 @@
 import os
-import logging
 import re
+import logging
 from datetime import datetime, timedelta
 from typing import List, Dict
 
@@ -10,7 +10,6 @@ from firebase_admin import firestore
 import dateparser
 
 from firebase_config import init_firebase
-from report_utils import generate_report_pdf
 
 # ---------------- INIT ----------------
 db = init_firebase()
@@ -23,7 +22,7 @@ logger = logging.getLogger("webhook")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "shreyaWebhook123")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
-REPORT_PDF_URL = os.getenv("REPORT_PDF_URL")
+REPORT_PDF_URL = os.getenv("REPORT_PDF_URL")  # MUST be public HTTPS
 
 WA_API = f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages"
 
@@ -37,16 +36,6 @@ doctorSchedule = {
     "Dermatology": ["09:00", "18:00"],
 }
 
-DAILY_LIMITS = {
-    "Cardiology": 12,
-    "Neurology": 10,
-    "Orthopedics": 14,
-    "Pediatrics": 16,
-    "General Medicine": 20,
-    "Dermatology": 18,
-}
-
-SLOT_LIMIT = 2
 DEPARTMENTS = list(doctorSchedule.keys())
 
 # ---------------- WHATSAPP HELPERS ----------------
@@ -98,7 +87,7 @@ async def send_list(to: str, body: str, rows: List[Dict[str, str]]):
         },
     })
 
-async def send_document(to: str, url: str, filename: str):
+async def send_document(to: str, url: str, filename):
     await wa_post({
         "messaging_product": "whatsapp",
         "to": to,
@@ -107,7 +96,7 @@ async def send_document(to: str, url: str, filename: str):
     })
 
 # ---------------- UTIL ----------------
-def generate_slots(start: str, end: str):
+def generate_slots(start, end):
     slots = []
     t = datetime.strptime(start, "%H:%M")
     e = datetime.strptime(end, "%H:%M")
@@ -116,47 +105,15 @@ def generate_slots(start: str, end: str):
         t += timedelta(minutes=30)
     return slots
 
-# ✅ PATIENT ID: P1000+
-def generate_patient_id():
-    ref = db.collection("metadata").document("patient_counter")
-
-    @firestore.transactional
-    def txn(transaction):
-        snap = ref.get(transaction=transaction)
-        last = snap.to_dict().get("count", 999) if snap.exists else 999
-        new = last + 1
-        transaction.set(ref, {"count": new})
-        return f"P{new}"
-
-    return txn(db.transaction())
-
-# ---------------- ATOMIC LIMIT CHECK ----------------
-def book_slot_atomic(dept, date, time):
-    slot_ref = db.collection("slot_counters").document(f"{dept}_{date}_{time}")
-    day_ref = db.collection("daily_counters").document(f"{dept}_{date}")
-
-    @firestore.transactional
-    def txn(transaction):
-        day_snap = day_ref.get(transaction=transaction)
-        day_count = day_snap.to_dict().get("count", 0) if day_snap.exists else 0
-        if day_count >= DAILY_LIMITS[dept]:
-            raise Exception("DAILY_LIMIT_REACHED")
-
-        slot_snap = slot_ref.get(transaction=transaction)
-        slot_count = slot_snap.to_dict().get("count", 0) if slot_snap.exists else 0
-        if slot_count >= SLOT_LIMIT:
-            raise Exception("SLOT_FULL")
-
-        transaction.set(day_ref, {"count": day_count + 1}, merge=True)
-        transaction.set(slot_ref, {"count": slot_count + 1}, merge=True)
-
-    txn(db.transaction())
-
 # ---------------- STATE ----------------
+STATE_TIMEOUT_MIN = 10
+
 def get_state(sender):
     ref = db.collection("registration_states").document(sender)
     snap = ref.get()
-    return snap.to_dict() if snap.exists else {"step": None, "data": {}}
+    if not snap.exists:
+        return {"step": None, "data": {}}
+    return snap.to_dict()
 
 def set_state(sender, step, data):
     db.collection("registration_states").document(sender).set({
@@ -170,7 +127,7 @@ def reset_state(sender):
 
 # ---------------- MENU ----------------
 async def show_menu(sender):
-    await send_buttons(sender, "🏥 *NovaMed Multispeciality Care*", [
+    await send_buttons(sender, "🏥 *NovaMed Multispeciality Care*\nChoose an option:", [
         {"id": "book", "title": "📅 Book Appointment"},
         {"id": "report", "title": "📄 Get Report"},
     ])
@@ -178,12 +135,12 @@ async def show_menu(sender):
 
 # ---------------- MAIN FLOW ----------------
 async def process_message(sender, text, msg):
-    now = datetime.now()
     state = get_state(sender)
     step = state.get("step")
     data = state.get("data", {})
+    now = datetime.now()
 
-    if text.lower() in ["hi", "hello", "menu", "restart"]:
+    if text.lower() in ["hi", "hello", "menu", "restart", "0"]:
         reset_state(sender)
         await show_menu(sender)
         return
@@ -192,16 +149,43 @@ async def process_message(sender, text, msg):
         await show_menu(sender)
         return
 
+    # MENU
     if step == "menu":
         bid = msg["interactive"]["button_reply"]["id"]
         if bid == "book":
             set_state(sender, "first", {})
             await send_text(sender, "👤 Enter *First Name*:")
-        else:
+        elif bid == "report":
             set_state(sender, "report", {})
             await send_text(sender, "🆔 Enter *Patient ID*:")
         return
 
+    # REPORT
+    if step == "report":
+        pid = text.upper()
+        doc = db.collection("patients").document(pid).get()
+        if not doc.exists:
+            await send_text(sender, "❌ Patient not found. Type *menu*.")
+            return
+
+        p = doc.to_dict()
+        await send_text(
+            sender,
+            f"👤 {p['FirstName']} {p['LastName']}\n"
+            f"🏥 {p['Department']}\n"
+            f"📅 {p['RegistrationDate']} ⏰ {p['RegistrationTime']}"
+        )
+
+        if REPORT_PDF_URL:
+            pdf_url = f"{REPORT_PDF_URL}/{pid}.pdf"
+            await send_document(sender, pdf_url, f"{pid}.pdf")
+        else:
+            await send_text(sender, "⚠️ Report PDF service not configured.")
+
+        reset_state(sender)
+        return
+
+    # BOOKING
     if step == "first":
         data["first"] = text.title()
         set_state(sender, "last", data)
@@ -210,21 +194,9 @@ async def process_message(sender, text, msg):
 
     if step == "last":
         data["last"] = text.title()
-        set_state(sender, "phone", data)
-        await send_text(sender, "📞 Enter *Phone Number* (10 digits):")
-        return
-
-    # ✅ PHONE STEP
-    if step == "phone":
-        phone = re.sub(r"\D", "", text)
-        if len(phone) != 10:
-            await send_text(sender, "❌ Invalid phone number. Enter 10 digits.")
-            return
-
-        data["phone"] = "+91" + phone
+        rows = [{"id": d, "title": d} for d in DEPARTMENTS]
         set_state(sender, "department", data)
-        await send_list(sender, "🏥 Select Department:",
-                        [{"id": d, "title": d} for d in DEPARTMENTS])
+        await send_list(sender, "🏥 Select Department:", rows)
         return
 
     if step == "department":
@@ -236,57 +208,48 @@ async def process_message(sender, text, msg):
     if step == "date":
         parsed = dateparser.parse(text)
         if not parsed or parsed.date() < now.date():
-            await send_text(sender, "❌ Invalid or past date.")
+            await send_text(sender, "❌ Invalid date.")
             return
 
         data["date"] = parsed.strftime("%Y-%m-%d")
-        slots = generate_slots(*doctorSchedule[data["department"]])
+        start, end = doctorSchedule[data["department"]]
+        slots = generate_slots(start, end)
 
-        available = []
-        for s in slots:
-            slot_dt = datetime.strptime(f"{data['date']} {s}", "%Y-%m-%d %H:%M")
-            if data["date"] == now.strftime("%Y-%m-%d") and slot_dt <= now:
-                continue
-            available.append(s)
+        available = [
+            s for s in slots
+            if datetime.strptime(f"{data['date']} {s}", "%Y-%m-%d %H:%M") > now
+        ]
 
         if not available:
             await send_text(sender, "❌ No future slots available.")
             reset_state(sender)
             return
 
+        buttons = [{"id": s, "title": s} for s in available[:3]]
         set_state(sender, "time", data)
-        await send_buttons(sender, "⏰ Select Time:",
-                           [{"id": s, "title": s} for s in available[:3]])
+        await send_buttons(sender, "⏰ Select Time:", buttons)
         return
 
     if step == "time":
         time = msg["interactive"]["button_reply"]["id"]
-
-        try:
-            book_slot_atomic(data["department"], data["date"], time)
-        except Exception as e:
-            await send_text(sender, "❌ Slot unavailable. Try another.")
-            reset_state(sender)
-            return
-
-        pid = generate_patient_id()
-        appt_dt = datetime.strptime(f"{data['date']} {time}", "%Y-%m-%d %H:%M")
+        pid = f"P{int(datetime.utcnow().timestamp())}"
 
         db.collection("patients").document(pid).set({
             "PatientID": pid,
             "FirstName": data["first"],
             "LastName": data["last"],
-            "Phone": data["phone"],
             "Department": data["department"],
             "RegistrationDate": data["date"],
             "RegistrationTime": time,
-            "AppointmentDateTime": appt_dt.isoformat(),
-            "ReminderSent": False,
+            "Phone": sender,
         })
 
-        await send_text(sender,
+        await send_text(
+            sender,
             f"✅ *Appointment Confirmed!*\n"
-            f"🆔 {pid}\n📅 {data['date']} ⏰ {time}"
+            f"🆔 Patient ID: {pid}\n"
+            f"📅 {data['date']} ⏰ {time}\n"
+            f"Please arrive 5 minutes early."
         )
         reset_state(sender)
 
@@ -301,18 +264,17 @@ async def verify(request: Request):
 async def receive(request: Request):
     body = await request.json()
     value = body.get("entry", [{}])[0].get("changes", [{}])[0].get("value", {})
+
     if "messages" not in value:
         return {"status": "ignored"}
 
     msg = value["messages"][0]
     sender = msg["from"]
 
-    text = (
-        msg.get("text", {}).get("body")
-        or msg.get("interactive", {}).get("button_reply", {}).get("title")
-        or msg.get("interactive", {}).get("list_reply", {}).get("title")
-        or ""
-    )
+    text = msg.get("text", {}).get("body", "")
+    if msg.get("interactive"):
+        it = msg["interactive"]
+        text = it.get("button_reply", {}).get("title", "") or it.get("list_reply", {}).get("title", "")
 
     await process_message(sender, text, msg)
     return {"status": "ok"}

@@ -1,32 +1,18 @@
 import os
-import json
-import logging
-import firebase_admin
-from firebase_admin import credentials, firestore
-
-logger = logging.getLogger("app")
+from firebase_admin import credentials, firestore, initialize_app, _apps
 
 def init_firebase():
-    if firebase_admin._apps:
-        logger.info("🔥 Firebase already initialized — skipping re-init")
+    if _apps:
         return firestore.client()
 
-    firebase_json = os.getenv("FIREBASE_CREDENTIALS")
+    # Absolute path (works in Windows + VS Code + Uvicorn)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    cred_path = os.path.join(base_dir, "serviceAccountKey.json")
 
-    if firebase_json:
-        logger.info("🔥 FIREBASE_CREDENTIALS FOUND in environment")
+    if not os.path.exists(cred_path):
+        raise ValueError(f"serviceAccountKey.json not found at {cred_path}")
 
-        try:
-            cred_dict = json.loads(firebase_json)
-            cred = credentials.Certificate(cred_dict)
-            firebase_admin.initialize_app(cred)
-            logger.info("✅ Firebase initialized successfully")
-            return firestore.client()
+    cred = credentials.Certificate(cred_path)
+    initialize_app(cred)
 
-        except Exception as e:
-            logger.error(f"❌ Firebase init failed from ENV: {e}")
-            raise
-
-    # ❗ DO NOT load from file — prevent fallback
-    logger.error("❌ FIREBASE_CREDENTIALS missing. Refusing to load from file.")
-    raise ValueError("FIREBASE_CREDENTIALS missing")
+    return firestore.client()
