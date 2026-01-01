@@ -1,5 +1,6 @@
 import os
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import List, Dict
 
@@ -36,7 +37,6 @@ doctorSchedule = {
     "Dermatology": ["09:00", "18:00"],
 }
 
-# ✅ DAILY LIMIT PER DEPARTMENT
 DAILY_LIMITS = {
     "Cardiology": 12,
     "Neurology": 10,
@@ -46,9 +46,7 @@ DAILY_LIMITS = {
     "Dermatology": 18,
 }
 
-# ✅ MAX PATIENTS PER SLOT
 SLOT_LIMIT = 2
-
 DEPARTMENTS = list(doctorSchedule.keys())
 
 # ---------------- WHATSAPP HELPERS ----------------
@@ -118,7 +116,7 @@ def generate_slots(start: str, end: str):
         t += timedelta(minutes=30)
     return slots
 
-# ✅ PATIENT ID: P1000, P1001...
+# ✅ PATIENT ID: P1000+
 def generate_patient_id():
     ref = db.collection("metadata").document("patient_counter")
 
@@ -132,7 +130,7 @@ def generate_patient_id():
 
     return txn(db.transaction())
 
-# ✅ ATOMIC SLOT + DAILY LIMIT CHECK
+# ---------------- ATOMIC LIMIT CHECK ----------------
 def book_slot_atomic(dept, date, time):
     slot_ref = db.collection("slot_counters").document(f"{dept}_{date}_{time}")
     day_ref = db.collection("daily_counters").document(f"{dept}_{date}")
@@ -141,13 +139,11 @@ def book_slot_atomic(dept, date, time):
     def txn(transaction):
         day_snap = day_ref.get(transaction=transaction)
         day_count = day_snap.to_dict().get("count", 0) if day_snap.exists else 0
-
         if day_count >= DAILY_LIMITS[dept]:
             raise Exception("DAILY_LIMIT_REACHED")
 
         slot_snap = slot_ref.get(transaction=transaction)
         slot_count = slot_snap.to_dict().get("count", 0) if slot_snap.exists else 0
-
         if slot_count >= SLOT_LIMIT:
             raise Exception("SLOT_FULL")
 
@@ -206,30 +202,6 @@ async def process_message(sender, text, msg):
             await send_text(sender, "🆔 Enter *Patient ID*:")
         return
 
-    if step == "report":
-        pid = text.upper()
-        doc = db.collection("patients").document(pid).get()
-        if not doc.exists:
-            await send_text(sender, "❌ Patient ID not found.")
-            reset_state(sender)
-            return
-
-        patient = doc.to_dict()
-        generate_report_pdf(patient)
-
-        await send_text(
-            sender,
-            f"👤 *{patient['FirstName']} {patient['LastName']}*\n"
-            f"🏥 {patient['Department']}\n"
-            f"📅 {patient['RegistrationDate']} ⏰ {patient['RegistrationTime']}"
-        )
-
-        if REPORT_PDF_URL:
-            await send_document(sender, f"{REPORT_PDF_URL}/reports/{pid}", f"{pid}.pdf")
-
-        reset_state(sender)
-        return
-
     if step == "first":
         data["first"] = text.title()
         set_state(sender, "last", data)
@@ -238,6 +210,18 @@ async def process_message(sender, text, msg):
 
     if step == "last":
         data["last"] = text.title()
+        set_state(sender, "phone", data)
+        await send_text(sender, "📞 Enter *Phone Number* (10 digits):")
+        return
+
+    # ✅ PHONE STEP
+    if step == "phone":
+        phone = re.sub(r"\D", "", text)
+        if len(phone) != 10:
+            await send_text(sender, "❌ Invalid phone number. Enter 10 digits.")
+            return
+
+        data["phone"] = "+91" + phone
         set_state(sender, "department", data)
         await send_list(sender, "🏥 Select Department:",
                         [{"id": d, "title": d} for d in DEPARTMENTS])
@@ -281,36 +265,29 @@ async def process_message(sender, text, msg):
         try:
             book_slot_atomic(data["department"], data["date"], time)
         except Exception as e:
-            if "DAILY_LIMIT_REACHED" in str(e):
-                await send_text(sender, "❌ Doctor's daily limit reached.")
-            elif "SLOT_FULL" in str(e):
-                await send_text(sender, "❌ This slot is full. Choose another.")
-            else:
-                await send_text(sender, "❌ Booking failed.")
+            await send_text(sender, "❌ Slot unavailable. Try another.")
             reset_state(sender)
             return
 
         pid = generate_patient_id()
-
         appt_dt = datetime.strptime(f"{data['date']} {time}", "%Y-%m-%d %H:%M")
 
         db.collection("patients").document(pid).set({
             "PatientID": pid,
             "FirstName": data["first"],
             "LastName": data["last"],
+            "Phone": data["phone"],
             "Department": data["department"],
             "RegistrationDate": data["date"],
             "RegistrationTime": time,
             "AppointmentDateTime": appt_dt.isoformat(),
             "ReminderSent": False,
-            "Phone": sender,
         })
 
-        await send_text(
-            sender,
-            f"✅ *Appointment Confirmed!*\n🆔 {pid}\n📅 {data['date']} ⏰ {time}"
+        await send_text(sender,
+            f"✅ *Appointment Confirmed!*\n"
+            f"🆔 {pid}\n📅 {data['date']} ⏰ {time}"
         )
-
         reset_state(sender)
 
 # ---------------- WEBHOOK ----------------
