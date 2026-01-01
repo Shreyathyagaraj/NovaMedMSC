@@ -13,6 +13,7 @@ import { BACKEND_URL } from "./config";
 
 export default function AppointmentPage({ department }) {
   const today = new Date().toISOString().split("T")[0];
+  const nowTime = new Date().toTimeString().slice(0, 5);
 
   const [formData, setFormData] = useState({
     FirstName: "",
@@ -27,32 +28,40 @@ export default function AppointmentPage({ department }) {
     Age: "",
   });
 
+  const [slotsLeft, setSlotsLeft] = useState(null);
   const [timeSlots, setTimeSlots] = useState([]);
-  const [bookedSlots, setBookedSlots] = useState({});
   const [success, setSuccess] = useState(false);
   const [newPatientId, setNewPatientId] = useState(null);
   const [loading, setLoading] = useState(false);
 
   // ---------------- DOCTOR CONFIG ----------------
   const doctorSchedule = {
-    Cardiology: ["09:00", "12:00"],
-    Neurology: ["14:00", "17:00"],
+    "General surgeon": ["12:00", "16:00"],
     Orthopedics: ["10:00", "13:00"],
+    Ophthalmology: ["09:00", "12:00"],
+    Gynecology: ["10:00", "12:00"],
+    "ENT Specialist": ["14:00", "17:00"],
+    Anaesthesiology: ["10:00", "13:00"],
     Pediatrics: ["15:00", "18:00"],
-    "General Medicine": ["09:00", "12:00"],
+    Physician: ["09:00", "12:00"],
     Dermatology: ["09:00", "18:00"],
+    Dentist: ["09:00", "12:00"],
   };
 
   const doctorLimits = {
-    Cardiology: 10,
-    Neurology: 8,
-    Orthopedics: 6,
+    "General surgeon": 3,
+    Orthopedics: 9,
+    Ophthalmology: 10,
+    Gynecology: 2,
+    "ENT Specialist": 8,
+    Anaesthesiology: 6,
     Pediatrics: 12,
-    "General Medicine": 10,
+    Physician: 10,
     Dermatology: 15,
+    Dentist: 12,
   };
 
-  // ---------------- SLOT GENERATOR ----------------
+  // ---------------- SLOT GENERATION ----------------
   const generateSlots = (start, end) => {
     const slots = [];
     let [h, m] = start.split(":").map(Number);
@@ -72,16 +81,14 @@ export default function AppointmentPage({ department }) {
   // ---------------- LOAD TIME SLOTS ----------------
   useEffect(() => {
     if (!formData.Department) return;
-
     const schedule = doctorSchedule[formData.Department];
     if (!schedule) return;
-
     setTimeSlots(generateSlots(schedule[0], schedule[1]));
   }, [formData.Department]);
 
-  // ---------------- FETCH BOOKED SLOTS ----------------
+  // ---------------- FETCH SLOT COUNT ----------------
   useEffect(() => {
-    const fetchBookedSlots = async () => {
+    const fetchSlots = async () => {
       if (!formData.Department || !formData.RegistrationDate) return;
 
       const q = query(
@@ -90,21 +97,15 @@ export default function AppointmentPage({ department }) {
         where("RegistrationDate", "==", formData.RegistrationDate)
       );
 
-      const snapshot = await getDocs(q);
-
-      const slotMap = {};
-      snapshot.forEach((doc) => {
-        const t = doc.data().RegistrationTime;
-        slotMap[t] = (slotMap[t] || 0) + 1;
-      });
-
-      setBookedSlots(slotMap);
+      const snap = await getDocs(q);
+      const max = doctorLimits[formData.Department] || 0;
+      setSlotsLeft(max - snap.size);
     };
 
-    fetchBookedSlots();
+    fetchSlots();
   }, [formData.Department, formData.RegistrationDate]);
 
-  // ---------------- HANDLE INPUT ----------------
+  // ---------------- HANDLE CHANGE ----------------
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData({ ...formData, [name]: value });
@@ -116,6 +117,11 @@ export default function AppointmentPage({ department }) {
 
     if (!formData.RegistrationTime) {
       alert("Please select a time slot");
+      return;
+    }
+
+    if (slotsLeft <= 0) {
+      alert("No slots available for this date");
       return;
     }
 
@@ -149,98 +155,94 @@ export default function AppointmentPage({ department }) {
 
     } catch (err) {
       console.error(err);
-      alert("Booking failed");
+      alert("Something went wrong");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="appointment-container">
-      <h2>Book Appointment – {formData.Department}</h2>
+    <div className="appointment-page">
+      <div className="appointment-card">
+        <h2>Book Appointment</h2>
+        <p className="subtitle">{formData.Department}</p>
 
-      <form onSubmit={handleSubmit} className="appointment-form">
+        <form onSubmit={handleSubmit}>
+          <label>First Name *</label>
+          <input required name="FirstName" onChange={handleChange} />
 
-        <label>First Name *</label>
-        <input required name="FirstName" onChange={handleChange} />
+          <label>Last Name *</label>
+          <input required name="LastName" onChange={handleChange} />
 
-        <label>Last Name *</label>
-        <input required name="LastName" onChange={handleChange} />
+          <label>Gender *</label>
+          <select required name="Gender" onChange={handleChange}>
+            <option value="">Select</option>
+            <option>Male</option>
+            <option>Female</option>
+            <option>Other</option>
+          </select>
 
-        <label>Gender *</label>
-        <select required name="Gender" onChange={handleChange}>
-          <option value="">Select</option>
-          <option>Male</option>
-          <option>Female</option>
-          <option>Other</option>
-        </select>
+          <label>Address *</label>
+          <textarea required name="Address" onChange={handleChange} />
 
-        <label>Address *</label>
-        <textarea required name="Address" onChange={handleChange} />
+          <label>Date *</label>
+          <input
+            type="date"
+            min={today}
+            required
+            name="RegistrationDate"
+            onChange={handleChange}
+          />
 
-        <label>Date *</label>
-        <input
-          type="date"
-          required
-          min={today}
-          name="RegistrationDate"
-          onChange={handleChange}
-        />
+          <label>Available Time Slots</label>
+          <div className="slots-grid">
+            {timeSlots.map((slot) => {
+              const isPast =
+                formData.RegistrationDate === today && slot <= nowTime;
 
-        {/* TIME SLOTS */}
-        <label>Available Time Slots</label>
-        <div className="time-slot-container">
-          {timeSlots.map((slot) => {
-            const booked = bookedSlots[slot] || 0;
-            const limit = doctorLimits[formData.Department];
-            const isFull = booked >= limit;
+              return (
+                <button
+                  key={slot}
+                  type="button"
+                  disabled={isPast || slotsLeft <= 0}
+                  className={`slot ${
+                    formData.RegistrationTime === slot ? "active" : ""
+                  }`}
+                  onClick={() =>
+                    setFormData({ ...formData, RegistrationTime: slot })
+                  }
+                >
+                  {slot}
+                </button>
+              );
+            })}
+          </div>
 
-            const isPast =
-              formData.RegistrationDate === today &&
-              slot <= new Date().toTimeString().slice(0, 5);
+          {slotsLeft !== null && (
+            <span className="left">Only {slotsLeft} slots left</span>
+          )}
 
-            return (
-              <button
-                key={slot}
-                type="button"
-                disabled={isFull || isPast}
-                className={`time-slot 
-                  ${isFull ? "full" : ""}
-                  ${formData.RegistrationTime === slot ? "selected" : ""}
-                `}
-                onClick={() =>
-                  setFormData({ ...formData, RegistrationTime: slot })
-                }
-              >
-                {slot}
-                <span className="left">
-                  {isFull ? "Full" : `(${limit - booked} left)`}
-                </span>
-              </button>
-            );
-          })}
-        </div>
+          <label>Phone *</label>
+          <input required name="PhoneNumber" onChange={handleChange} />
 
-        <label>Phone *</label>
-        <input required name="PhoneNumber" onChange={handleChange} />
+          <label>Email</label>
+          <input name="Email" onChange={handleChange} />
 
-        <label>Email</label>
-        <input name="Email" onChange={handleChange} />
+          <label>Age *</label>
+          <input type="number" required name="Age" onChange={handleChange} />
 
-        <label>Age *</label>
-        <input type="number" required name="Age" onChange={handleChange} />
+          <button className="confirm-btn" disabled={loading}>
+            {loading ? "Booking..." : "Confirm Appointment"}
+          </button>
+        </form>
 
-        <button className="submit-btn" disabled={loading}>
-          {loading ? "Booking..." : "Confirm Appointment"}
-        </button>
-      </form>
-
-      {success && (
-        <p className="success-message">
-          ✅ Appointment Confirmed <br />
-          Patient ID: <b>{newPatientId}</b>
-        </p>
-      )}
+        {success && (
+          <div className="success">
+            ✅ Appointment Confirmed <br />
+            <strong>Patient ID: {newPatientId}</strong>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
