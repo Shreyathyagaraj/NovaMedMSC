@@ -10,6 +10,7 @@ from firebase_admin import firestore
 import dateparser
 
 from firebase_config import init_firebase
+from report_utils import generate_report_pdf   # ✅ PDF generator
 
 # ---------------- INIT ----------------
 db = init_firebase()
@@ -23,7 +24,7 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "shreyaWebhook123")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 
-REPORT_PDF_URL = os.getenv("REPORT_PDF_URL")  # https://your-backend/reports
+REPORT_PDF_URL = os.getenv("REPORT_PDF_URL")  # e.g. https://xyz.onrender.com
 
 WA_API = f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages"
 
@@ -35,15 +36,6 @@ doctorSchedule = {
     "Pediatrics": ["15:00", "18:00"],
     "General Medicine": ["09:00", "12:00"],
     "Dermatology": ["09:00", "18:00"],
-}
-
-doctorLimits = {
-    "Cardiology": 10,
-    "Neurology": 8,
-    "Orthopedics": 6,
-    "Pediatrics": 12,
-    "General Medicine": 10,
-    "Dermatology": 15,
 }
 
 DEPARTMENTS = list(doctorSchedule.keys())
@@ -97,7 +89,7 @@ async def send_list(to: str, body: str, rows: List[Dict[str, str]]):
         },
     })
 
-async def send_document(to: str, url: str, filename="report.pdf"):
+async def send_document(to: str, url: str, filename):
     await wa_post({
         "messaging_product": "whatsapp",
         "to": to,
@@ -116,20 +108,12 @@ def generate_slots(start: str, end: str):
     return slots
 
 # ---------------- STATE ----------------
-STATE_TIMEOUT_MIN = 10
-
 def get_state(sender: str):
     ref = db.collection("registration_states").document(sender)
     snap = ref.get()
     if not snap.exists:
-        return {"step": None, "data": {}, "updatedAt": None}
-
-    state = snap.to_dict()
-    ts = state.get("updatedAt")
-    if ts and datetime.utcnow() - ts.replace(tzinfo=None) > timedelta(minutes=STATE_TIMEOUT_MIN):
-        ref.delete()
-        return {"step": None, "data": {}, "updatedAt": None}
-    return state
+        return {"step": None, "data": {}}
+    return snap.to_dict()
 
 def set_state(sender: str, step: str, data: dict):
     db.collection("registration_states").document(sender).set({
@@ -157,7 +141,7 @@ async def process_message(sender: str, text: str, msg: dict):
     data = state.get("data", {})
     now = datetime.now()
 
-    if text_l in ["hi", "hello", "menu", "restart", "0"]:
+    if text_l in ["hi", "hello", "menu", "restart"]:
         reset_state(sender)
         await show_menu(sender)
         return
@@ -174,31 +158,38 @@ async def process_message(sender: str, text: str, msg: dict):
             await send_text(sender, "👤 Enter *First Name*:")
         elif bid == "report":
             set_state(sender, "report", {})
-            await send_text(sender, "🆔 Enter *Patient ID* (e.g. P1012):")
+            await send_text(sender, "🆔 Enter *Patient ID*:")
         return
 
     # -------- REPORT --------
     if step == "report":
         pid = text.upper()
         doc = db.collection("patients").document(pid).get()
+
         if not doc.exists:
-            await send_text(sender, "❌ Patient ID not found. Type *menu*.")
+            await send_text(sender, "❌ Patient ID not found.")
+            reset_state(sender)
             return
 
-        p = doc.to_dict()
+        patient = doc.to_dict()
+
+        # ✅ Generate PDF
+        generate_report_pdf(patient)
+
         await send_text(
             sender,
-            f"👤 *{p['FirstName']} {p['LastName']}*\n"
-            f"🏥 Dept: {p['Department']}\n"
-            f"📅 Date: {p['RegistrationDate']}\n"
-            f"⏰ Time: {p['RegistrationTime']}"
+            f"👤 *{patient['FirstName']} {patient['LastName']}*\n"
+            f"🏥 Dept: {patient['Department']}\n"
+            f"📅 Date: {patient['RegistrationDate']}\n"
+            f"⏰ Time: {patient['RegistrationTime']}"
         )
 
         if REPORT_PDF_URL:
-            try:
-                await send_document(sender, f"{REPORT_PDF_URL}/{pid}", f"{pid}.pdf")
-            except Exception:
-                await send_text(sender, "⚠️ Report PDF currently unavailable.")
+            await send_document(
+                sender,
+                f"{REPORT_PDF_URL}/reports/{pid}",
+                f"{pid}.pdf"
+            )
 
         reset_state(sender)
         return
@@ -241,7 +232,6 @@ async def process_message(sender: str, text: str, msg: dict):
 
         used = [p.to_dict()["RegistrationTime"] for p in booked]
 
-        # ⛔ FILTER PAST TIMES FOR TODAY
         available = []
         for s in slots:
             slot_dt = datetime.strptime(f"{data['date']} {s}", "%Y-%m-%d %H:%M")
@@ -281,8 +271,7 @@ async def process_message(sender: str, text: str, msg: dict):
             sender,
             f"✅ *Appointment Confirmed!*\n"
             f"🆔 Patient ID: {pid}\n"
-            f"📅 {data['date']} ⏰ {time}\n"
-            f"Please arrive 5 minutes early."
+            f"📅 {data['date']} ⏰ {time}"
         )
         reset_state(sender)
 
