@@ -167,7 +167,149 @@ async def show_menu(sender):
     set_state(sender, "menu", {})
 
 # ---------------- MAIN FLOW ----------------
-async def process_message(sender, text, msg):
+async def process_message(sender, text, msg):import os, json, logging
+from datetime import datetime, timedelta
+from typing import List, Dict
+
+import httpx, dateparser
+from fastapi import APIRouter, Request, HTTPException
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from apscheduler.schedulers.background import BackgroundScheduler
+
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# ---------------- LOGGING ----------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("webhook")
+
+# ---------------- FIREBASE INIT ----------------
+if not firebase_admin._apps:
+    cred = credentials.Certificate(json.loads(os.getenv("FIREBASE_CREDENTIALS")))
+    firebase_admin.initialize_app(cred)
+
+db = firestore.client()
+
+# ---------------- ROUTER ----------------
+router = APIRouter()
+
+# ---------------- CONFIG ----------------
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "shreyaWebhook123")
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
+PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
+WA_API = f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages"
+
+# ---------------- SCHEDULER ----------------
+scheduler = BackgroundScheduler()
+scheduler.start()
+
+# ---------------- DEPARTMENTS ----------------
+DEPARTMENTS = [
+    "Anaesthesiology", "Ophthalmology", "Gynecology", "Dentist",
+    "General Surgeon", "Orthopedics", "Pediatrics", "ENT Specialist",
+    "Dermatology", "Physician", "Cardiology", "Neurology", "General Medicine"
+]
+
+# ---------------- WHATSAPP HELPERS ----------------
+async def wa_post(payload):
+    async with httpx.AsyncClient(timeout=15) as client:
+        await client.post(
+            WA_API,
+            headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"},
+            json=payload
+        )
+
+async def send_text(to, text):
+    await wa_post({
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "text",
+        "text": {"body": text}
+    })
+
+async def send_document(to, file_path):
+    async with httpx.AsyncClient() as client:
+        with open(file_path, "rb") as f:
+            res = await client.post(
+                f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/media",
+                headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"},
+                files={"file": f},
+                data={"messaging_product": "whatsapp", "type": "document"}
+            )
+    media_id = res.json()["id"]
+    await wa_post({
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "document",
+        "document": {"id": media_id, "filename": os.path.basename(file_path)}
+    })
+
+# ---------------- PDF REPORT ----------------
+def generate_pdf(patient):
+    filename = f"/tmp/{patient['PatientID']}.pdf"
+    c = canvas.Canvas(filename, pagesize=A4)
+    c.setFont("Helvetica", 12)
+    y = 750
+
+    for k, v in patient.items():
+        c.drawString(50, y, f"{k}: {v}")
+        y -= 20
+
+    c.save()
+    return filename
+
+# ---------------- REMINDER ----------------
+def schedule_reminder(phone, patient):
+    appt_time = datetime.strptime(
+        f"{patient['RegistrationDate']} {patient['TimeBlock'].split('-')[0]}",
+        "%Y-%m-%d %H:%M"
+    )
+    remind_at = appt_time - timedelta(minutes=10)
+
+    def job():
+        import asyncio
+        asyncio.run(send_text(
+            phone,
+            f"⏰ Reminder: Appointment at {patient['TimeBlock']} today"
+        ))
+
+    scheduler.add_job(job, "date", run_date=remind_at)
+
+# ---------------- WEBHOOK ----------------
+@router.get("/webhook")
+async def verify(request: Request):
+    if request.query_params.get("hub.verify_token") == VERIFY_TOKEN:
+        return int(request.query_params.get("hub.challenge"))
+    raise HTTPException(status_code=403)
+
+@router.post("/webhook")
+async def receive(request: Request):
+    body = await request.json()
+    value = body["entry"][0]["changes"][0]["value"]
+
+    if "messages" not in value:
+        return {"status": "ignored"}
+
+    msg = value["messages"][0]
+    sender = msg["from"]
+    text = msg.get("text", {}).get("body", "").strip()
+
+    # -------- REPORT --------
+    if text.upper().startswith("P"):
+        doc = db.collection("patients").document(text.upper()).get()
+        if not doc.exists:
+            await send_text(sender, "❌ Patient ID not found")
+            return {"ok": True}
+
+        patient = doc.to_dict()
+        pdf = generate_pdf(patient)
+        await send_document(sender, pdf)
+        return {"ok": True}
+
+    await send_text(sender, "Send Patient ID (e.g. P1012) to get report know 📄")
+    return {"ok": True}
+
     state = get_state(sender)
     step = state.get("step")
     data = state.get("data", {})

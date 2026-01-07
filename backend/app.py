@@ -1,3 +1,5 @@
+import os
+import json
 import logging
 import pickle
 from datetime import datetime
@@ -11,15 +13,15 @@ from fastapi.responses import JSONResponse
 # ---------------- APP INIT ----------------
 app = FastAPI(title="NovaMed Backend")
 
+# ---------------- LOGGING ----------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
 
-# ---------------- FIREBASE INIT (ONCE) ----------------
+# ---------------- FIREBASE INIT ----------------
 db = None
 try:
     import firebase_admin
     from firebase_admin import credentials, firestore
-    import os, json
 
     if not firebase_admin._apps:
         sa = os.getenv("FIREBASE_CREDENTIALS")
@@ -33,20 +35,20 @@ try:
     logger.info("✅ Firebase initialized")
 
 except Exception as e:
-    logger.warning("⚠️ Firebase disabled: %s", e)
+    logger.error("❌ Firebase init failed: %s", e)
 
-# ---------------- ROUTERS (SAFE) ----------------
+# ---------------- ROUTERS ----------------
 try:
     from webhook import router as whatsapp_router
     app.include_router(whatsapp_router)
     logger.info("✅ WhatsApp webhook loaded")
 except Exception as e:
-    logger.warning("⚠️ WhatsApp webhook disabled: %s", e)
+    logger.warning("⚠️ WhatsApp webhook not loaded: %s", e)
 
 # ---------------- CORS ----------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],   # change to frontend domain in production
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -56,24 +58,40 @@ app.add_middleware(
 def home():
     return {"status": "NovaMed backend running"}
 
-# ---------------- LOAD MODEL ----------------
+# ---------------- LOAD ML MODEL ----------------
 MODEL_PATH = "xgb_patient_model.pkl"
 model = None
 
 try:
     with open(MODEL_PATH, "rb") as f:
         model = pickle.load(f)
-    logger.info("✅ Prediction model loaded")
+    logger.info("✅ XGBoost model loaded")
 except Exception as e:
-    logger.warning("⚠️ Model not loaded: %s", e)
+    logger.error("❌ Model load failed: %s", e)
 
-# ---------------- PATIENT ID (FIRESTORE) ----------------
+# ---------------- DEPARTMENT MAPPING ----------------
+DEPT_MAPPING = {
+    "Anaesthesiology": 1,
+    "Ophthalmology": 2,
+    "Gynecology": 3,
+    "Dentist": 4,
+    "General Surgeon": 5,
+    "Orthopedics": 6,
+    "Pediatrics": 7,
+    "ENT Specialist": 8,
+    "Dermatology": 9,
+    "Physician": 10,
+    "Cardiology": 11,
+    "Neurology": 12,
+    "General Medicine": 13
+}
+
+# ---------------- PATIENT ID GENERATOR ----------------
 def generate_patient_id():
     if not db:
         raise RuntimeError("Firestore unavailable")
 
     ref = db.collection("metadata").document("patient_counter")
-
     transaction = db.transaction()
 
     @firestore.transactional
@@ -86,14 +104,11 @@ def generate_patient_id():
 
     return txn(transaction)
 
-# ---------------- REGISTER PATIENT ----------------
+# ---------------- WEBSITE REGISTRATION ----------------
 @app.post("/register_patient")
 async def register_patient(request: Request):
     if not db:
-        return JSONResponse(
-            {"error": "Database unavailable"},
-            status_code=503
-        )
+        return JSONResponse({"error": "Database unavailable"}, 503)
 
     try:
         payload = await request.json()
@@ -101,7 +116,7 @@ async def register_patient(request: Request):
 
         payload.update({
             "PatientID": pid,
-            "created_at": datetime.utcnow().isoformat()
+            "createdAt": firestore.SERVER_TIMESTAMP
         })
 
         db.collection("patients").document(pid).set(payload)
@@ -109,64 +124,70 @@ async def register_patient(request: Request):
         return {"status": "success", "PatientID": pid}
 
     except Exception as e:
-        logger.exception("❌ register_patient failed")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        logger.exception("❌ Registration failed")
+        return JSONResponse({"error": str(e)}, 500)
 
-# ---------------- PREDICTION API ----------------
+# ---------------- PREDICTION API (FIXED) ----------------
 @app.post("/predict")
 async def predict(request: Request):
-    if model is None:
+    if model is None or not db:
         return JSONResponse(
-            {"error": "Prediction model unavailable"},
-            status_code=500
+            {"error": "Prediction service unavailable"},
+            status_code=503
         )
 
     try:
         body = await request.json()
-        date = body.get("date")
         department = body.get("department")
+        date = body.get("date")
 
-        if not date or not department:
+        if not department or not date:
             return JSONResponse(
-                {"error": "date and department required"},
+                {"error": "department and date required"},
                 status_code=400
             )
 
-        dept_mapping = {
-            "Cardiology": 1,
-            "Neurology": 2,
-            "Orthopedics": 3,
-            "Pediatrics": 4,
-            "General Medicine": 5,
-            "Dermatology": 6
-        }
-
-        if department not in dept_mapping:
+        if department not in DEPT_MAPPING:
             return JSONResponse(
                 {"error": "Invalid department"},
                 status_code=400
             )
 
+        # Day of week
         weekday = datetime.strptime(date, "%Y-%m-%d").weekday()
 
+        # Count existing appointments from Firestore
+        booked = db.collection("patients") \
+            .where("Department", "==", department) \
+            .where("RegistrationDate", "==", date) \
+            .stream()
+
+        existing_count = sum(1 for _ in booked)
+
+        # Model input (must match training)
         df = pd.DataFrame({
-            "weekday": [weekday] * 24,
-            "hour": list(range(24)),
-            "dept_code": [dept_mapping[department]] * 24
+            "weekday": [weekday],
+            "hour": [10],  # peak hour assumption
+            "dept_code": [DEPT_MAPPING[department]],
+            "existing_patients": [existing_count]
         })
 
-        preds = model.predict(df)
-        preds = np.maximum(preds, 0).astype(int)
+        prediction = int(np.maximum(model.predict(df)[0], 0))
+
+        crowd_level = (
+            "LOW" if prediction < 10 else
+            "MEDIUM" if prediction < 20 else
+            "HIGH"
+        )
 
         return {
             "department": department,
-            "totalPatients": int(preds.sum()),
-            "chartData": [
-                {"hour": f"{h}:00", "predicted": int(p)}
-                for h, p in zip(range(24), preds)
-            ]
+            "date": date,
+            "alreadyBooked": existing_count,
+            "predictedPatients": prediction,
+            "crowdLevel": crowd_level
         }
 
     except Exception as e:
         logger.exception("❌ Prediction failed")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": str(e)}, 500)
