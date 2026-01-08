@@ -1,14 +1,19 @@
-import os, json, logging
+import os, json, logging, random
 from datetime import datetime, timedelta
+from typing import Dict
 
 import httpx, dateparser
 from fastapi import APIRouter, Request, HTTPException
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-from apscheduler.schedulers.background import BackgroundScheduler
 
 import firebase_admin
 from firebase_admin import credentials, firestore
+
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # --------------------------------------------------
 # LOGGING
@@ -45,25 +50,23 @@ scheduler = BackgroundScheduler()
 scheduler.start()
 
 # --------------------------------------------------
-# DOCTORS (REDUCED + SAFE)
+# DEPARTMENTS (REDUCED & SAFE)
 # --------------------------------------------------
 DOCTORS = {
-    "Cardiology": ("10:00", "14:00", 5),
-    "Neurology": ("10:00", "14:00", 4),
-    "Orthopedics": ("10:00", "14:00", 6),
-    "Pediatrics": ("10:00", "14:00", 8),
-    "General Medicine": ("10:00", "14:00", 10),
-    "Dermatology": ("10:00", "14:00", 6),
-    "ENT": ("10:00", "14:00", 5),
-    "Physician": ("10:00", "14:00", 6),
+    "Cardiology": ("10:00", "16:00", 5),
+    "Neurology": ("12:00", "16:00", 4),
+    "Orthopedics": ("10:00", "16:00", 6),
+    "Pediatrics": ("10:00", "16:00", 8),
+    "General Medicine": ("09:00", "13:00", 10),
+    "Dermatology": ("09:00", "18:00", 12),
 }
 
 # --------------------------------------------------
 # WHATSAPP HELPERS
 # --------------------------------------------------
 async def wa_send(payload):
-    async with httpx.AsyncClient(timeout=15) as c:
-        await c.post(
+    async with httpx.AsyncClient(timeout=15) as client:
+        await client.post(
             WA_API,
             headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"},
             json=payload
@@ -112,8 +115,30 @@ async def send_list(to, body, rows):
         }
     })
 
+async def send_document(to, file_path):
+    async with httpx.AsyncClient(timeout=30) as client:
+        with open(file_path, "rb") as f:
+            res = await client.post(
+                f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/media",
+                headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"},
+                files={"file": f},
+                data={"messaging_product": "whatsapp", "type": "document"}
+            )
+
+    media_id = res.json()["id"]
+
+    await wa_send({
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "document",
+        "document": {
+            "id": media_id,
+            "filename": os.path.basename(file_path)
+        }
+    })
+
 # --------------------------------------------------
-# STATE
+# STATE HANDLING
 # --------------------------------------------------
 def get_state(user):
     doc = db.collection("states").document(user).get()
@@ -147,46 +172,86 @@ def generate_patient_id():
     return run(tx)
 
 # --------------------------------------------------
-# TIME SLOTS (WITH REMAINING COUNT)
+# TIME SLOTS
 # --------------------------------------------------
-def generate_slots(dept, date):
-    start, end, cap = DOCTORS[dept]
+def generate_slots(start, end):
     s = datetime.strptime(start, "%H:%M")
     e = datetime.strptime(end, "%H:%M")
-
     slots = []
     while s < e:
         n = s + timedelta(hours=1)
-        block = f"{s.strftime('%H:%M')}-{n.strftime('%H:%M')}"
-
-        booked = db.collection("patients") \
-            .where("Department", "==", dept) \
-            .where("Date", "==", date) \
-            .where("Time", "==", block) \
-            .stream()
-
-        remaining = cap - sum(1 for _ in booked)
-        if remaining > 0:
-            slots.append(f"{block} ({remaining} left)")
+        slots.append(f"{s.strftime('%H:%M')}-{n.strftime('%H:%M')}")
         s = n
-
     return slots
 
+def slot_count(dept, date, slot):
+    q = db.collection("patients") \
+        .where("Department", "==", dept) \
+        .where("Date", "==", date) \
+        .where("Time", "==", slot) \
+        .stream()
+    return sum(1 for _ in q)
+
 # --------------------------------------------------
-# PDF (DUMMY REPORT)
+# PDF REPORT
 # --------------------------------------------------
 def create_pdf(patient):
-    path = f"/tmp/{patient['PatientID']}.pdf"
-    c = canvas.Canvas(path, pagesize=A4)
-    y = 750
-    c.setFont("Helvetica", 12)
+    path = f"/tmp/{patient['PatientID']}_report.pdf"
+    styles = getSampleStyleSheet()
+    doc = SimpleDocTemplate(path, pagesize=A4)
 
-    for k, v in patient.items():
-        c.drawString(50, y, f"{k}: {v}")
-        y -= 20
+    story = []
+    story.append(Paragraph("<b>NovaMed Multispeciality Hospital</b>", styles["Title"]))
+    story.append(Spacer(1, 0.3 * inch))
 
-    c.save()
+    story.append(Paragraph("<b>Patient Medical Report</b>", styles["Heading2"]))
+    story.append(Spacer(1, 0.2 * inch))
+
+    story.append(Paragraph(
+        f"""
+        Patient ID: {patient['PatientID']}<br/>
+        Name: {patient['Name']}<br/>
+        Phone: {patient['Phone']}<br/>
+        Department: {patient['Department']}<br/>
+        Date: {patient['Date']}<br/>
+        Time: {patient['Time']}<br/>
+        """, styles["Normal"]
+    ))
+
+    story.append(Spacer(1, 0.3 * inch))
+
+    story.append(Paragraph(
+        f"""
+        <b>Test Results</b><br/>
+        BP: {random.randint(110,130)}/{random.randint(70,90)} mmHg<br/>
+        Sugar: {random.randint(90,140)} mg/dL<br/>
+        Heart Rate: {random.randint(65,95)} bpm
+        """, styles["Normal"]
+    ))
+
+    story.append(Spacer(1, 0.3 * inch))
+    story.append(Paragraph(
+        "<i>This is a system generated medical report.</i>",
+        styles["Italic"]
+    ))
+
+    doc.build(story)
     return path
+
+# --------------------------------------------------
+# REMINDER
+# --------------------------------------------------
+def schedule_reminder(user, patient):
+    t = datetime.strptime(
+        f"{patient['Date']} {patient['Time'].split('-')[0]}",
+        "%Y-%m-%d %H:%M"
+    ) - timedelta(minutes=10)
+
+    def job():
+        import asyncio
+        asyncio.run(send_text(user, "⏰ Reminder: Appointment in 10 minutes"))
+
+    scheduler.add_job(job, "date", run_date=t)
 
 # --------------------------------------------------
 # MENU
@@ -196,12 +261,12 @@ async def show_menu(user):
     set_state(user, "menu", {})
 
 # --------------------------------------------------
-# MAIN FLOW (STRICT & SAFE)
+# MAIN FLOW
 # --------------------------------------------------
 async def process(user, text):
     text = text.strip()
 
-    if text.lower() in ["hi", "hello", "menu", "restart"]:
+    if text.lower() in ["hi", "hello", "hii", "menu", "restart"]:
         reset_state(user)
         await show_menu(user)
         return
@@ -210,7 +275,6 @@ async def process(user, text):
     step = state.get("step")
     data = state.get("data", {})
 
-    # ---------- MENU ----------
     if step == "menu":
         if text == "Book Appointment":
             set_state(user, "name", {})
@@ -220,14 +284,12 @@ async def process(user, text):
             await send_text(user, "🆔 Enter Patient ID:")
         return
 
-    # ---------- NAME ----------
     if step == "name":
         data["Name"] = text
         set_state(user, "phone", data)
         await send_text(user, "📞 Enter 10-digit phone number:")
         return
 
-    # ---------- PHONE ----------
     if step == "phone":
         if not text.isdigit() or len(text) != 10:
             await send_text(user, "❌ Phone number must be exactly 10 digits")
@@ -237,39 +299,43 @@ async def process(user, text):
         await send_list(user, "🏥 Select Department:", list(DOCTORS.keys()))
         return
 
-    # ---------- DEPARTMENT ----------
     if step == "department":
         if text not in DOCTORS:
-            await send_text(user, "❌ Please select a department from the list")
+            await send_text(user, "❌ Invalid department")
             return
         data["Department"] = text
         set_state(user, "date", data)
         await send_text(user, "📅 Enter date (YYYY-MM-DD):")
         return
 
-    # ---------- DATE ----------
     if step == "date":
         parsed = dateparser.parse(text)
         if not parsed or parsed.date() < datetime.now().date():
             await send_text(user, "❌ Date cannot be in the past")
             return
-
         data["Date"] = parsed.strftime("%Y-%m-%d")
-        slots = generate_slots(data["Department"], data["Date"])
 
-        if not slots:
-            await send_text(user, "❌ No slots available for this date")
+        start, end, cap = DOCTORS[data["Department"]]
+        slots = generate_slots(start, end)
+
+        available = []
+        for s in slots:
+            left = cap - slot_count(data["Department"], data["Date"], s)
+            if left > 0:
+                available.append(f"{s} ({left} left)")
+
+        if not available:
+            await send_text(user, "❌ No slots available")
             reset_state(user)
             return
 
         set_state(user, "time", data)
-        await send_buttons(user, "⏰ Select Time Slot:", slots)
+        await send_buttons(user, "⏰ Select Time Slot:", available)
         return
 
-    # ---------- TIME ----------
     if step == "time":
-        block = text.split(" (")[0]
-        data["Time"] = block
+        slot = text.split(" ")[0]
+        data["Time"] = slot
         pid = generate_patient_id()
 
         record = {
@@ -280,18 +346,24 @@ async def process(user, text):
         }
 
         db.collection("patients").document(pid).set(record)
-        await send_text(user, f"✅ Appointment Confirmed\n🆔 {pid}")
+        set_state(user, "reminder", record)
+        await send_buttons(user, "⏰ Need 10-min reminder?", ["Yes", "No"])
+        return
+
+    if step == "reminder":
+        if text == "Yes":
+            schedule_reminder(user, data)
+        await send_text(user, f"✅ Appointment Confirmed\n🆔 {data['PatientID']}")
         reset_state(user)
         return
 
-    # ---------- REPORT ----------
     if step == "report":
         doc = db.collection("patients").document(text).get()
         if not doc.exists:
             await send_text(user, "❌ Patient ID not found")
-        else:
-            create_pdf(doc.to_dict())
-            await send_text(user, "📄 Dummy PDF report generated")
+            return
+        pdf = create_pdf(doc.to_dict())
+        await send_document(user, pdf)
         reset_state(user)
 
 # --------------------------------------------------
@@ -315,10 +387,10 @@ async def receive(req: Request):
     user = msg["from"]
 
     if msg.get("interactive"):
-        it = msg["interactive"]
+        inter = msg["interactive"]
         text = (
-            it.get("button_reply", {}) or
-            it.get("list_reply", {})
+            inter.get("button_reply", {}) or
+            inter.get("list_reply", {})
         ).get("title", "")
     else:
         text = msg.get("text", {}).get("body", "")
