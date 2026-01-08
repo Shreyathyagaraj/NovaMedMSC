@@ -1,24 +1,30 @@
-import logging, pickle
+import os, json, logging, pickle
 from datetime import datetime
+
 import pandas as pd
 import numpy as np
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from firebase_config import get_db
+import firebase_admin
+from firebase_admin import credentials, firestore
 
-# ---------------- APP ----------------
+# ---------------- APP INIT ----------------
 app = FastAPI(title="NovaMed Backend")
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app")
 
-db = get_db()
-if db:
-    logger.info("✅ Firebase ready")
-else:
-    logger.warning("⚠️ Firebase unavailable")
+# ---------------- FIREBASE INIT ----------------
+db = None
+try:
+    if not firebase_admin._apps:
+        cred = credentials.Certificate(json.loads(os.getenv("FIREBASE_CREDENTIALS")))
+        firebase_admin.initialize_app(cred)
+    db = firestore.client()
+    logger.info("✅ Firebase connected")
+except Exception as e:
+    logger.error("❌ Firebase failed: %s", e)
 
 # ---------------- CORS ----------------
 app.add_middleware(
@@ -28,87 +34,67 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------- ROUTERS ----------------
-from webhook import router as whatsapp_router
-app.include_router(whatsapp_router)
-
 # ---------------- ROOT ----------------
 @app.get("/")
-def home():
-    return {"status": "NovaMed backend running"}
+def root():
+    return {"status": "Backend running"}
 
-# ---------------- MODEL ----------------
-MODEL_PATH = "xgb_patient_model.pkl"
+# ---------------- LOAD ML MODEL ----------------
 model = None
-
 try:
-    with open(MODEL_PATH, "rb") as f:
+    with open("xgb_patient_model.pkl", "rb") as f:
         model = pickle.load(f)
     logger.info("✅ ML model loaded")
 except Exception as e:
-    logger.error("❌ Model load failed: %s", e)
+    logger.error("❌ Model not loaded: %s", e)
 
-# ---------------- DEPTS ----------------
-DEPT_MAPPING = {
+DEPT_MAP = {
     "Cardiology": 1,
     "Neurology": 2,
     "Orthopedics": 3,
     "Pediatrics": 4,
     "General Medicine": 5,
-    "Dermatology": 6,
+    "Dermatology": 6
 }
 
-# ---------------- REGISTER (WEBSITE) ----------------
-@app.post("/register_patient")
-async def register_patient(req: Request):
-    if not db:
-        return JSONResponse({"error": "DB unavailable"}, 503)
-
-    data = await req.json()
-    pid = f"P{int(datetime.utcnow().timestamp())}"
-
-    data.update({
-        "PatientID": pid,
-        "createdAt": datetime.utcnow().isoformat()
-    })
-
-    db.collection("patients").document(pid).set(data)
-    return {"status": "success", "PatientID": pid}
-
-# ---------------- PREDICTION ----------------
+# ---------------- WEBSITE PREDICTION ----------------
 @app.post("/predict")
 async def predict(req: Request):
     if not model or not db:
-        return JSONResponse({"error": "Prediction unavailable"}, 503)
+        return JSONResponse({"error": "Service unavailable"}, 503)
 
     body = await req.json()
-    dept = body.get("department")
+    department = body.get("department")
     date = body.get("date")
 
-    if dept not in DEPT_MAPPING:
+    if department not in DEPT_MAP:
         return JSONResponse({"error": "Invalid department"}, 400)
 
     weekday = datetime.strptime(date, "%Y-%m-%d").weekday()
 
-    booked = db.collection("patients") \
-        .where("Department", "==", dept) \
+    existing = db.collection("patients") \
+        .where("Department", "==", department) \
         .where("RegistrationDate", "==", date) \
         .stream()
 
-    count = sum(1 for _ in booked)
+    count = sum(1 for _ in existing)
 
     df = pd.DataFrame({
         "weekday": [weekday],
         "hour": [10],
-        "dept_code": [DEPT_MAPPING[dept]],
+        "dept_code": [DEPT_MAP[department]],
         "existing_patients": [count]
     })
 
-    pred = int(np.maximum(model.predict(df)[0], 0))
+    pred = int(max(model.predict(df)[0], 0))
 
     return {
-        "department": dept,
+        "department": department,
         "date": date,
         "alreadyBooked": count,
         "predictedPatients": pred
     }
+
+# ---------------- LOAD WHATSAPP ROUTER ----------------
+from webhook import router
+app.include_router(router)
