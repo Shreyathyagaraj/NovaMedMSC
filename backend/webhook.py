@@ -1,6 +1,6 @@
 import os, json, logging
-from datetime import datetime, timedelta
-from typing import List, Dict
+from datetime import datetime
+from typing import List
 
 import httpx, dateparser
 from fastapi import APIRouter, Request, HTTPException
@@ -20,9 +20,11 @@ if not firebase_admin._apps:
 db = firestore.client()
 router = APIRouter()
 
+# ---------------- CONFIG ----------------
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
+
 WA_API = f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages"
 
 # ---------------- DATA ----------------
@@ -33,7 +35,7 @@ DEPARTMENTS = [
 
 # ---------------- WHATSAPP HELPERS ----------------
 async def wa_send(payload):
-    async with httpx.AsyncClient() as c:
+    async with httpx.AsyncClient(timeout=15) as c:
         await c.post(
             WA_API,
             headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"},
@@ -48,7 +50,7 @@ async def send_text(to, text):
         "text": {"body": text}
     })
 
-async def send_buttons(to, body, buttons):
+async def send_buttons(to, body, buttons: List[str]):
     await wa_send({
         "messaging_product": "whatsapp",
         "to": to,
@@ -65,7 +67,7 @@ async def send_buttons(to, body, buttons):
         }
     })
 
-async def send_list(to, body, rows):
+async def send_list(to, body, rows: List[str]):
     await wa_send({
         "messaging_product": "whatsapp",
         "to": to,
@@ -76,7 +78,7 @@ async def send_list(to, body, rows):
             "action": {
                 "button": "Select",
                 "sections": [{
-                    "title": "Options",
+                    "title": "Departments",
                     "rows": [{"id": r, "title": r} for r in rows]
                 }]
             }
@@ -92,7 +94,7 @@ def set_state(user, step, data):
     db.collection("states").document(user).set({
         "step": step,
         "data": data,
-        "time": datetime.utcnow()
+        "updatedAt": firestore.SERVER_TIMESTAMP
     })
 
 def reset_state(user):
@@ -100,11 +102,15 @@ def reset_state(user):
 
 # ---------------- MENU ----------------
 async def menu(user):
-    await send_buttons(user, "🏥 *NovaMed*\nChoose:", ["Book Appointment", "Get Report"])
+    await send_buttons(
+        user,
+        "🏥 *NovaMed Multispeciality Care*\nChoose an option:",
+        ["Book Appointment", "Get Report"]
+    )
     set_state(user, "menu", {})
 
 # ---------------- MAIN FLOW ----------------
-async def process(user, text, msg):
+async def process(user, text):
     if text.lower() in ["hi", "hello", "menu", "restart"]:
         reset_state(user)
         await menu(user)
@@ -142,20 +148,23 @@ async def process(user, text, msg):
         return
 
     if step == "date":
-        data["date"] = text
-        pid = f"P{int(datetime.utcnow().timestamp())}"
+        parsed = dateparser.parse(text)
+        if not parsed:
+            await send_text(user, "❌ Invalid date format")
+            return
 
+        pid = f"P{int(datetime.utcnow().timestamp())}"
         db.collection("patients").document(pid).set({
             "PatientID": pid,
             "Name": data["name"],
             "Phone": data["phone"],
             "Department": data["department"],
-            "RegistrationDate": data["date"]
+            "RegistrationDate": parsed.strftime("%Y-%m-%d")
         })
 
         await send_text(user, f"✅ Appointment Confirmed\n🆔 {pid}")
-        await menu(user)
         reset_state(user)
+        await menu(user)
         return
 
     if step == "report":
@@ -164,14 +173,15 @@ async def process(user, text, msg):
             await send_text(user, "❌ Invalid Patient ID")
         else:
             p = doc.to_dict()
-            await send_text(user,
-                f"📄 *Report*\n"
+            await send_text(
+                user,
+                f"📄 *Patient Details*\n"
                 f"Name: {p['Name']}\n"
-                f"Dept: {p['Department']}\n"
+                f"Department: {p['Department']}\n"
                 f"Date: {p['RegistrationDate']}"
             )
-        await menu(user)
         reset_state(user)
+        await menu(user)
 
 # ---------------- WEBHOOK ----------------
 @router.get("/webhook")
@@ -183,16 +193,25 @@ async def verify(req: Request):
 @router.post("/webhook")
 async def receive(req: Request):
     body = await req.json()
-    value = body["entry"][0]["changes"][0]["value"]
+    value = body.get("entry", [{}])[0].get("changes", [{}])[0].get("value", {})
+
     if "messages" not in value:
         return {"ok": True}
 
     msg = value["messages"][0]
     user = msg["from"]
 
-    text = msg.get("text", {}).get("body", "")
-    if msg.get("interactive"):
-        text = msg["interactive"]["button_reply"]["title"]
+    text = ""
 
-    await process(user, text, msg)
+    if msg.get("text"):
+        text = msg["text"]["body"].strip()
+
+    elif msg.get("interactive"):
+        interactive = msg["interactive"]
+        if interactive.get("button_reply"):
+            text = interactive["button_reply"]["title"]
+        elif interactive.get("list_reply"):
+            text = interactive["list_reply"]["title"]
+
+    await process(user, text)
     return {"ok": True}

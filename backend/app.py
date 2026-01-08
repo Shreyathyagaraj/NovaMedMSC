@@ -37,17 +37,18 @@ app.add_middleware(
 # ---------------- ROOT ----------------
 @app.get("/")
 def root():
-    return {"status": "Backend running"}
+    return {"status": "NovaMed backend running"}
 
 # ---------------- LOAD ML MODEL ----------------
 model = None
 try:
     with open("xgb_patient_model.pkl", "rb") as f:
         model = pickle.load(f)
-    logger.info("✅ ML model loaded")
+    logger.info("✅ XGBoost model loaded")
 except Exception as e:
-    logger.error("❌ Model not loaded: %s", e)
+    logger.error("❌ Model load failed: %s", e)
 
+# ---------------- DEPARTMENT MAP ----------------
 DEPT_MAP = {
     "Cardiology": 1,
     "Neurology": 2,
@@ -86,13 +87,16 @@ async def predict(req: Request):
         "existing_patients": [count]
     })
 
-    pred = int(max(model.predict(df)[0], 0))
+    prediction = int(max(model.predict(df)[0], 0))
+
+    level = "LOW" if prediction < 10 else "MEDIUM" if prediction < 20 else "HIGH"
 
     return {
         "department": department,
         "date": date,
         "alreadyBooked": count,
-        "predictedPatients": pred
+        "predictedPatients": prediction,
+        "crowdLevel": level
     }
 
 # ---------------- LOAD WHATSAPP ROUTER ----------------
