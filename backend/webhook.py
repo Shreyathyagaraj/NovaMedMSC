@@ -1,9 +1,13 @@
 import os, json, logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List
 
 import httpx, dateparser
 from fastapi import APIRouter, Request, HTTPException
+
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from apscheduler.schedulers.background import BackgroundScheduler
 
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -24,14 +28,29 @@ router = APIRouter()
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
-
 WA_API = f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages"
 
-# ---------------- DATA ----------------
-DEPARTMENTS = [
-    "Cardiology", "Neurology", "Orthopedics",
-    "Pediatrics", "General Medicine", "Dermatology"
-]
+# ---------------- SCHEDULER ----------------
+scheduler = BackgroundScheduler()
+scheduler.start()
+
+# ---------------- DEPARTMENTS & SCHEDULE ----------------
+DEPARTMENTS = {
+    "Cardiology": ("10:00", "16:00"),
+    "Neurology": ("10:00", "16:00"),
+    "Orthopedics": ("10:00", "16:00"),
+    "Pediatrics": ("12:00", "16:00"),
+    "General Medicine": ("10:00", "16:00"),
+    "Dermatology": ("10:00", "16:00"),
+    "ENT": ("10:00", "14:00"),
+    "Physician": ("10:00", "14:00"),
+    "Anaesthesiology": ("10:00", "13:00"),
+    "Ophthalmology": ("10:00", "13:00"),
+    "Gynecology": ("12:00", "16:00"),
+    "Dentist": ("10:00", "14:00"),
+}
+
+SLOT_CAPACITY = 5
 
 # ---------------- WHATSAPP HELPERS ----------------
 async def wa_send(payload):
@@ -100,20 +119,60 @@ def set_state(user, step, data):
 def reset_state(user):
     db.collection("states").document(user).delete()
 
-# ---------------- MENU ----------------
-async def menu(user):
-    await send_buttons(
-        user,
-        "🏥 *NovaMed Multispeciality Care*\nChoose an option:",
-        ["Book Appointment", "Get Report"]
-    )
-    set_state(user, "menu", {})
+# ---------------- PATIENT ID ----------------
+def generate_patient_id():
+    ref = db.collection("meta").document("patient_counter")
+    tx = db.transaction()
+
+    @firestore.transactional
+    def update(txn):
+        snap = ref.get(transaction=txn)
+        last = snap.to_dict().get("count", 1000) if snap.exists else 1000
+        new = last + 1
+        txn.set(ref, {"count": new})
+        return f"P{new}"
+
+    return update(tx)
+
+# ---------------- TIME SLOTS ----------------
+def generate_slots(start, end):
+    slots = []
+    s = datetime.strptime(start, "%H:%M")
+    e = datetime.strptime(end, "%H:%M")
+    while s < e:
+        nxt = s + timedelta(hours=1)
+        slots.append(f"{s.strftime('%H')}-{nxt.strftime('%H')}")
+        s = nxt
+    return slots
+
+# ---------------- PDF ----------------
+def generate_pdf(pid):
+    path = f"/tmp/{pid}.pdf"
+    c = canvas.Canvas(path, pagesize=A4)
+    c.drawString(100, 750, "NovaMed Hospital")
+    c.drawString(100, 720, f"Patient ID: {pid}")
+    c.drawString(100, 690, "Report: Normal (Dummy Report)")
+    c.save()
+    return path
+
+# ---------------- REMINDER ----------------
+def schedule_reminder(phone, date, slot):
+    time = slot.split("-")[0]
+    appt = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H")
+    remind = appt - timedelta(minutes=10)
+
+    def job():
+        import asyncio
+        asyncio.run(send_text(phone, "⏰ Reminder: Appointment in 10 minutes"))
+
+    scheduler.add_job(job, "date", run_date=remind)
 
 # ---------------- MAIN FLOW ----------------
 async def process(user, text):
     if text.lower() in ["hi", "hello", "menu", "restart"]:
         reset_state(user)
-        await menu(user)
+        await send_buttons(user, "🏥 NovaMed\nChoose:", ["Book Appointment", "Get Report"])
+        set_state(user, "menu", {})
         return
 
     state = get_state(user)
@@ -132,13 +191,16 @@ async def process(user, text):
     if step == "name":
         data["name"] = text
         set_state(user, "phone", data)
-        await send_text(user, "📞 Enter phone number:")
+        await send_text(user, "📞 Enter 10-digit phone number:")
         return
 
     if step == "phone":
+        if not text.isdigit() or len(text) != 10:
+            await send_text(user, "❌ Phone must be exactly 10 digits")
+            return
         data["phone"] = text
         set_state(user, "department", data)
-        await send_list(user, "🏥 Select Department:", DEPARTMENTS)
+        await send_list(user, "🏥 Select Department:", list(DEPARTMENTS.keys()))
         return
 
     if step == "department":
@@ -149,39 +211,48 @@ async def process(user, text):
 
     if step == "date":
         parsed = dateparser.parse(text)
-        if not parsed:
-            await send_text(user, "❌ Invalid date format")
+        if not parsed or parsed.date() < datetime.now().date():
+            await send_text(user, "❌ Date cannot be past")
             return
+        data["date"] = parsed.strftime("%Y-%m-%d")
+        start, end = DEPARTMENTS[data["department"]]
+        slots = generate_slots(start, end)
+        set_state(user, "time", data)
+        await send_buttons(user, "⏰ Select Time Slot:", slots[:3])
+        return
 
-        pid = f"P{int(datetime.utcnow().timestamp())}"
+    if step == "time":
+        data["slot"] = text
+        pid = generate_patient_id()
+
         db.collection("patients").document(pid).set({
             "PatientID": pid,
             "Name": data["name"],
             "Phone": data["phone"],
             "Department": data["department"],
-            "RegistrationDate": parsed.strftime("%Y-%m-%d")
+            "Date": data["date"],
+            "Slot": data["slot"]
         })
 
-        await send_text(user, f"✅ Appointment Confirmed\n🆔 {pid}")
+        set_state(user, "reminder", {"pid": pid, **data})
+        await send_buttons(user, "⏰ Need reminder 10 minutes earlier?", ["Yes", "No"])
+        return
+
+    if step == "reminder":
+        if text == "Yes":
+            schedule_reminder(user, data["date"], data["slot"])
+        await send_text(user, f"✅ Appointment Confirmed\n🆔 {data['pid']}")
         reset_state(user)
-        await menu(user)
         return
 
     if step == "report":
         doc = db.collection("patients").document(text).get()
         if not doc.exists:
-            await send_text(user, "❌ Invalid Patient ID")
+            await send_text(user, "❌ Patient ID not found")
         else:
-            p = doc.to_dict()
-            await send_text(
-                user,
-                f"📄 *Patient Details*\n"
-                f"Name: {p['Name']}\n"
-                f"Department: {p['Department']}\n"
-                f"Date: {p['RegistrationDate']}"
-            )
+            pdf = generate_pdf(text)
+            await send_text(user, "📄 Dummy PDF report generated (for demo)")
         reset_state(user)
-        await menu(user)
 
 # ---------------- WEBHOOK ----------------
 @router.get("/webhook")
@@ -202,16 +273,14 @@ async def receive(req: Request):
     user = msg["from"]
 
     text = ""
-
     if msg.get("text"):
         text = msg["text"]["body"].strip()
-
     elif msg.get("interactive"):
-        interactive = msg["interactive"]
-        if interactive.get("button_reply"):
-            text = interactive["button_reply"]["title"]
-        elif interactive.get("list_reply"):
-            text = interactive["list_reply"]["title"]
+        it = msg["interactive"]
+        if it.get("button_reply"):
+            text = it["button_reply"]["title"]
+        elif it.get("list_reply"):
+            text = it["list_reply"]["title"]
 
     await process(user, text)
     return {"ok": True}
