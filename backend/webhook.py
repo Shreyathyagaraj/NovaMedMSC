@@ -1,16 +1,17 @@
 import os, json, logging
 from datetime import datetime, timedelta
-from typing import List
+from typing import Dict
 
 import httpx, dateparser
 from fastapi import APIRouter, Request, HTTPException
 
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-from apscheduler.schedulers.background import BackgroundScheduler
-
 import firebase_admin
 from firebase_admin import credentials, firestore
+
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # ---------------- LOGGING ----------------
 logging.basicConfig(level=logging.INFO)
@@ -22,9 +23,11 @@ if not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()
+
+# ---------------- ROUTER ----------------
 router = APIRouter()
 
-# ---------------- CONFIG ----------------
+# ---------------- WHATSAPP CONFIG ----------------
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
@@ -35,22 +38,20 @@ scheduler = BackgroundScheduler()
 scheduler.start()
 
 # ---------------- DEPARTMENTS & SCHEDULE ----------------
-DEPARTMENTS = {
-    "Cardiology": ("10:00", "16:00"),
-    "Neurology": ("10:00", "16:00"),
-    "Orthopedics": ("10:00", "16:00"),
-    "Pediatrics": ("12:00", "16:00"),
-    "General Medicine": ("10:00", "16:00"),
-    "Dermatology": ("10:00", "16:00"),
-    "ENT": ("10:00", "14:00"),
-    "Physician": ("10:00", "14:00"),
-    "Anaesthesiology": ("10:00", "13:00"),
-    "Ophthalmology": ("10:00", "13:00"),
-    "Gynecology": ("12:00", "16:00"),
-    "Dentist": ("10:00", "14:00"),
+DOCTORS = {
+    "Cardiology": ("10:00", "16:00", 5),
+    "Neurology": ("12:00", "16:00", 4),
+    "Orthopedics": ("10:00", "16:00", 6),
+    "Pediatrics": ("10:00", "16:00", 8),
+    "General Medicine": ("09:00", "13:00", 10),
+    "Dermatology": ("09:00", "18:00", 12),
+    "ENT": ("10:00", "14:00", 6),
+    "Physician": ("10:00", "14:00", 6),
+    "Anaesthesiology": ("11:00", "15:00", 4),
+    "Ophthalmology": ("09:00", "13:00", 6),
+    "Gynecology": ("10:00", "14:00", 6),
+    "Dentist": ("10:00", "14:00", 6),
 }
-
-SLOT_CAPACITY = 5
 
 # ---------------- WHATSAPP HELPERS ----------------
 async def wa_send(payload):
@@ -69,7 +70,7 @@ async def send_text(to, text):
         "text": {"body": text}
     })
 
-async def send_buttons(to, body, buttons: List[str]):
+async def send_buttons(to, body, buttons):
     await wa_send({
         "messaging_product": "whatsapp",
         "to": to,
@@ -80,13 +81,24 @@ async def send_buttons(to, body, buttons: List[str]):
             "action": {
                 "buttons": [
                     {"type": "reply", "reply": {"id": b, "title": b}}
-                    for b in buttons
+                    for b in buttons[:3]  # WhatsApp limit
                 ]
             }
         }
     })
 
-async def send_list(to, body, rows: List[str]):
+async def send_list(to, body, rows1, rows2=None):
+    sections = [{
+        "title": "Departments",
+        "rows": [{"id": r, "title": r} for r in rows1]
+    }]
+
+    if rows2:
+        sections.append({
+            "title": "More Departments",
+            "rows": [{"id": r, "title": r} for r in rows2]
+        })
+
     await wa_send({
         "messaging_product": "whatsapp",
         "to": to,
@@ -94,13 +106,7 @@ async def send_list(to, body, rows: List[str]):
         "interactive": {
             "type": "list",
             "body": {"text": body},
-            "action": {
-                "button": "Select",
-                "sections": [{
-                    "title": "Departments",
-                    "rows": [{"id": r, "title": r} for r in rows]
-                }]
-            }
+            "action": {"button": "Choose", "sections": sections}
         }
     })
 
@@ -113,7 +119,7 @@ def set_state(user, step, data):
     db.collection("states").document(user).set({
         "step": step,
         "data": data,
-        "updatedAt": firestore.SERVER_TIMESTAMP
+        "updated": firestore.SERVER_TIMESTAMP
     })
 
 def reset_state(user):
@@ -121,58 +127,69 @@ def reset_state(user):
 
 # ---------------- PATIENT ID ----------------
 def generate_patient_id():
-    ref = db.collection("meta").document("patient_counter")
+    ref = db.collection("metadata").document("patient_counter")
     tx = db.transaction()
 
     @firestore.transactional
-    def update(txn):
-        snap = ref.get(transaction=txn)
+    def run(tx):
+        snap = ref.get(transaction=tx)
         last = snap.to_dict().get("count", 1000) if snap.exists else 1000
         new = last + 1
-        txn.set(ref, {"count": new})
+        tx.set(ref, {"count": new})
         return f"P{new}"
 
-    return update(tx)
+    return run(tx)
 
 # ---------------- TIME SLOTS ----------------
 def generate_slots(start, end):
-    slots = []
     s = datetime.strptime(start, "%H:%M")
     e = datetime.strptime(end, "%H:%M")
+    slots = []
     while s < e:
-        nxt = s + timedelta(hours=1)
-        slots.append(f"{s.strftime('%H')}-{nxt.strftime('%H')}")
-        s = nxt
+        n = s + timedelta(hours=1)
+        slots.append(f"{s.strftime('%H:%M')}-{n.strftime('%H:%M')}")
+        s = n
     return slots
 
 # ---------------- PDF ----------------
-def generate_pdf(pid):
-    path = f"/tmp/{pid}.pdf"
+def create_pdf(patient):
+    path = f"/tmp/{patient['PatientID']}.pdf"
     c = canvas.Canvas(path, pagesize=A4)
-    c.drawString(100, 750, "NovaMed Hospital")
-    c.drawString(100, 720, f"Patient ID: {pid}")
-    c.drawString(100, 690, "Report: Normal (Dummy Report)")
+    y = 750
+    c.setFont("Helvetica", 12)
+
+    for k, v in patient.items():
+        c.drawString(50, y, f"{k}: {v}")
+        y -= 20
+
     c.save()
     return path
 
 # ---------------- REMINDER ----------------
-def schedule_reminder(phone, date, slot):
-    time = slot.split("-")[0]
-    appt = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H")
-    remind = appt - timedelta(minutes=10)
+def schedule_reminder(wa, patient):
+    appt = datetime.strptime(
+        f"{patient['Date']} {patient['Time'].split('-')[0]}",
+        "%Y-%m-%d %H:%M"
+    ) - timedelta(minutes=10)
 
     def job():
         import asyncio
-        asyncio.run(send_text(phone, "⏰ Reminder: Appointment in 10 minutes"))
+        asyncio.run(send_text(wa, "⏰ Reminder: Appointment in 10 minutes"))
 
-    scheduler.add_job(job, "date", run_date=remind)
+    scheduler.add_job(job, "date", run_date=appt)
+
+# ---------------- MENU ----------------
+async def show_menu(user):
+    await send_buttons(user, "🏥 *NovaMed*\nChoose:", ["Book Appointment", "Get Report"])
+    set_state(user, "menu", {})
 
 # ---------------- MAIN FLOW ----------------
-async def process(user, text):
-    if text.lower() in ["hi", "hello", "menu", "restart"]:
+async def process(user, text, msg):
+    text = text.strip()
+
+    if text.lower() in ["hi", "hello", "hii", "menu", "restart"]:
         reset_state(user)
-        await send_buttons(user, "🏥 NovaMed\nChoose:", ["Book Appointment", "Get Report"])
-        set_state(user, "menu", {})
+        await show_menu(user)
         return
 
     state = get_state(user)
@@ -189,22 +206,23 @@ async def process(user, text):
         return
 
     if step == "name":
-        data["name"] = text
+        data["Name"] = text
         set_state(user, "phone", data)
         await send_text(user, "📞 Enter 10-digit phone number:")
         return
 
     if step == "phone":
         if not text.isdigit() or len(text) != 10:
-            await send_text(user, "❌ Phone must be exactly 10 digits")
+            await send_text(user, "❌ Phone number must be exactly 10 digits")
             return
-        data["phone"] = text
+        data["Phone"] = text
+        depts = list(DOCTORS.keys())
+        await send_list(user, "🏥 Select Department:", depts[:10], depts[10:])
         set_state(user, "department", data)
-        await send_list(user, "🏥 Select Department:", list(DEPARTMENTS.keys()))
         return
 
     if step == "department":
-        data["department"] = text
+        data["Department"] = text
         set_state(user, "date", data)
         await send_text(user, "📅 Enter date (YYYY-MM-DD):")
         return
@@ -212,36 +230,37 @@ async def process(user, text):
     if step == "date":
         parsed = dateparser.parse(text)
         if not parsed or parsed.date() < datetime.now().date():
-            await send_text(user, "❌ Date cannot be past")
+            await send_text(user, "❌ Date cannot be in the past")
             return
-        data["date"] = parsed.strftime("%Y-%m-%d")
-        start, end = DEPARTMENTS[data["department"]]
+        data["Date"] = parsed.strftime("%Y-%m-%d")
+
+        start, end, cap = DOCTORS[data["Department"]]
         slots = generate_slots(start, end)
-        set_state(user, "time", data)
-        await send_buttons(user, "⏰ Select Time Slot:", slots[:3])
+        set_state(user, "time", data | {"cap": cap, "slots": slots})
+        await send_buttons(user, "⏰ Select Time Slot:", slots)
         return
 
     if step == "time":
-        data["slot"] = text
+        data["Time"] = text
         pid = generate_patient_id()
 
-        db.collection("patients").document(pid).set({
+        record = {
             "PatientID": pid,
-            "Name": data["name"],
-            "Phone": data["phone"],
-            "Department": data["department"],
-            "Date": data["date"],
-            "Slot": data["slot"]
-        })
+            **data,
+            "WhatsApp": user,
+            "createdAt": firestore.SERVER_TIMESTAMP
+        }
 
-        set_state(user, "reminder", {"pid": pid, **data})
-        await send_buttons(user, "⏰ Need reminder 10 minutes earlier?", ["Yes", "No"])
+        db.collection("patients").document(pid).set(record)
+
+        await send_buttons(user, "⏰ Need 10-min reminder?", ["Yes", "No"])
+        set_state(user, "reminder", record)
         return
 
     if step == "reminder":
         if text == "Yes":
-            schedule_reminder(user, data["date"], data["slot"])
-        await send_text(user, f"✅ Appointment Confirmed\n🆔 {data['pid']}")
+            schedule_reminder(user, data)
+        await send_text(user, f"✅ Appointment Confirmed\n🆔 {data['PatientID']}")
         reset_state(user)
         return
 
@@ -250,8 +269,8 @@ async def process(user, text):
         if not doc.exists:
             await send_text(user, "❌ Patient ID not found")
         else:
-            pdf = generate_pdf(text)
-            await send_text(user, "📄 Dummy PDF report generated (for demo)")
+            pdf = create_pdf(doc.to_dict())
+            await send_text(user, "📄 Dummy PDF report generated")
         reset_state(user)
 
 # ---------------- WEBHOOK ----------------
@@ -264,7 +283,7 @@ async def verify(req: Request):
 @router.post("/webhook")
 async def receive(req: Request):
     body = await req.json()
-    value = body.get("entry", [{}])[0].get("changes", [{}])[0].get("value", {})
+    value = body["entry"][0]["changes"][0]["value"]
 
     if "messages" not in value:
         return {"ok": True}
@@ -272,15 +291,13 @@ async def receive(req: Request):
     msg = value["messages"][0]
     user = msg["from"]
 
-    text = ""
-    if msg.get("text"):
-        text = msg["text"]["body"].strip()
-    elif msg.get("interactive"):
-        it = msg["interactive"]
-        if it.get("button_reply"):
-            text = it["button_reply"]["title"]
-        elif it.get("list_reply"):
-            text = it["list_reply"]["title"]
+    if msg.get("interactive"):
+        text = (
+            msg["interactive"].get("button_reply", {}) or
+            msg["interactive"].get("list_reply", {})
+        ).get("title", "")
+    else:
+        text = msg.get("text", {}).get("body", "")
 
-    await process(user, text)
+    await process(user, text, msg)
     return {"ok": True}
