@@ -50,7 +50,7 @@ scheduler = BackgroundScheduler()
 scheduler.start()
 
 # --------------------------------------------------
-# DEPARTMENTS (REDUCED & SAFE)
+# DEPARTMENTS
 # --------------------------------------------------
 DOCTORS = {
     "Cardiology": ("10:00", "16:00", 5),
@@ -203,37 +203,17 @@ def create_pdf(patient):
     story = []
     story.append(Paragraph("<b>NovaMed Multispeciality Hospital</b>", styles["Title"]))
     story.append(Spacer(1, 0.3 * inch))
-
     story.append(Paragraph("<b>Patient Medical Report</b>", styles["Heading2"]))
     story.append(Spacer(1, 0.2 * inch))
 
-    story.append(Paragraph(
-        f"""
+    story.append(Paragraph(f"""
         Patient ID: {patient['PatientID']}<br/>
         Name: {patient['Name']}<br/>
         Phone: {patient['Phone']}<br/>
         Department: {patient['Department']}<br/>
         Date: {patient['Date']}<br/>
         Time: {patient['Time']}<br/>
-        """, styles["Normal"]
-    ))
-
-    story.append(Spacer(1, 0.3 * inch))
-
-    story.append(Paragraph(
-        f"""
-        <b>Test Results</b><br/>
-        BP: {random.randint(110,130)}/{random.randint(70,90)} mmHg<br/>
-        Sugar: {random.randint(90,140)} mg/dL<br/>
-        Heart Rate: {random.randint(65,95)} bpm
-        """, styles["Normal"]
-    ))
-
-    story.append(Spacer(1, 0.3 * inch))
-    story.append(Paragraph(
-        "<i>This is a system generated medical report.</i>",
-        styles["Italic"]
-    ))
+    """, styles["Normal"]))
 
     doc.build(story)
     return path
@@ -300,19 +280,36 @@ async def process(user, text):
         return
 
     if step == "department":
-        if text not in DOCTORS:
-            await send_text(user, "❌ Invalid department")
-            return
         data["Department"] = text
         set_state(user, "date", data)
-        await send_text(user, "📅 Enter date (YYYY-MM-DD):")
+        await send_text(user, "📅 Enter date (today / tomorrow / YYYY-MM-DD):")
         return
 
+    # ✅ SAFE DATE PATCH
     if step == "date":
-        parsed = dateparser.parse(text)
-        if not parsed or parsed.date() < datetime.now().date():
+        try:
+            parsed = dateparser.parse(
+                text,
+                settings={
+                    "PREFER_DATES_FROM": "future",
+                    "RELATIVE_BASE": datetime.now(),
+                    "STRICT_PARSING": False
+                }
+            )
+        except Exception:
+            parsed = None
+
+        if not parsed:
+            await send_text(
+                user,
+                "❌ Invalid date.\nExamples:\n• today\n• tomorrow\n• 2026-01-15"
+            )
+            return
+
+        if parsed.date() < datetime.now().date():
             await send_text(user, "❌ Date cannot be in the past")
             return
+
         data["Date"] = parsed.strftime("%Y-%m-%d")
 
         start, end, cap = DOCTORS[data["Department"]]
@@ -334,8 +331,7 @@ async def process(user, text):
         return
 
     if step == "time":
-        slot = text.split(" ")[0]
-        data["Time"] = slot
+        data["Time"] = text.split(" ")[0]
         pid = generate_patient_id()
 
         record = {
@@ -354,16 +350,6 @@ async def process(user, text):
         if text == "Yes":
             schedule_reminder(user, data)
         await send_text(user, f"✅ Appointment Confirmed\n🆔 {data['PatientID']}")
-        reset_state(user)
-        return
-
-    if step == "report":
-        doc = db.collection("patients").document(text).get()
-        if not doc.exists:
-            await send_text(user, "❌ Patient ID not found")
-            return
-        pdf = create_pdf(doc.to_dict())
-        await send_document(user, pdf)
         reset_state(user)
 
 # --------------------------------------------------
