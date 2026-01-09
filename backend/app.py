@@ -18,21 +18,23 @@ logger = logging.getLogger("app")
 db = None
 try:
     if not firebase_admin._apps:
-        cred = credentials.Certificate(
-            json.loads(os.getenv("FIREBASE_CREDENTIALS"))
-        )
+        fb_env = os.getenv("FIREBASE_CREDENTIALS")
+        if fb_env:
+            cred = credentials.Certificate(json.loads(fb_env))
+        else:
+            cred = credentials.Certificate("serviceAccountKey.json")
         firebase_admin.initialize_app(cred)
 
     db = firestore.client()
     logger.info("✅ Firebase connected")
-
 except Exception as e:
     logger.error("❌ Firebase failed: %s", e)
+    db = None
 
 # ---------------- CORS ----------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # Netlify + localhost
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -42,7 +44,7 @@ app.add_middleware(
 def root():
     return {"status": "NovaMed backend running"}
 
-# ---------------- LOAD ML MODEL ----------------
+# ---------------- LOAD MODEL ----------------
 model = None
 try:
     with open("xgb_patient_model.pkl", "rb") as f:
@@ -50,75 +52,87 @@ try:
     logger.info("✅ XGBoost model loaded")
 except Exception as e:
     logger.error("❌ Model load failed: %s", e)
+    model = None
 
-# ---------------- DEPARTMENT MAP ----------------
+# ---------------- DEPARTMENT MAP (UPDATED) ----------------
 DEPT_MAP = {
-    "Cardiology": 1,
-    "Neurology": 2,
-    "Orthopedics": 3,
-    "Pediatrics": 4,
-    "General Medicine": 5,
-    "Dermatology": 6,
+    "Cardiology": 0,
+    "Pediatrics": 1,
+    "Dermatology": 2,
+    "Dentist": 3,
+    "ENT": 4,
+    "Gynecology": 5,
+    "Anesthesiology": 6,
+    "General Surgeon": 7,
+    "Physician": 8,
+    "Ophthalmology": 9,
 }
 
-# ---------------- WEBSITE PREDICTION ----------------
+# ---------------- PREDICT ----------------
 @app.post("/predict")
 async def predict(req: Request):
     if not model or not db:
-        return JSONResponse({"error": "Service unavailable"}, status_code=503)
+        return JSONResponse({"error": "Service unavailable"}, 503)
 
     body = await req.json()
     department = body.get("department")
     date = body.get("date")
 
-    if not department or not date:
-        return JSONResponse({"error": "Missing inputs"}, status_code=400)
-
     if department not in DEPT_MAP:
-        return JSONResponse({"error": "Invalid department"}, status_code=400)
+        return JSONResponse({"error": "Invalid department"}, 400)
 
     try:
         weekday = datetime.strptime(date, "%Y-%m-%d").weekday()
     except Exception:
-        return JSONResponse({"error": "Invalid date format"}, status_code=400)
+        return JSONResponse({"error": "Invalid date"}, 400)
 
-    # 🔹 FIXED FIELD NAME (matches WhatsApp booking)
+    # already booked
     existing = (
         db.collection("patients")
         .where("Department", "==", department)
         .where("Date", "==", date)
         .stream()
     )
-
-    existing_count = sum(1 for _ in existing)
+    already_booked = sum(1 for _ in existing)
 
     chart_data = []
     total_predicted = 0
 
-    # 🔹 Hourly prediction (10 AM – 4 PM)
-    for hour in range(10, 16):
+    # OPD HOURS: 9 AM – 6 PM
+    for hour in range(9, 19):
         df = pd.DataFrame({
             "weekday": [weekday],
             "hour": [hour],
             "dept_code": [DEPT_MAP[department]],
-            "existing_patients": [existing_count],
         })
 
-        prediction = int(max(model.predict(df)[0], 0))
-        total_predicted += prediction
+        pred = int(max(model.predict(df)[0], 0))
+        total_predicted += pred
 
         chart_data.append({
             "hour": f"{hour}:00",
-            "predicted": prediction
+            "predicted": pred
         })
 
+    hourly_avg = round(total_predicted / len(chart_data), 1)
+
+    est_min = int(total_predicted * 2.5)
+    est_max = int(total_predicted * 3.5)
+
+    crowd = (
+        "LOW" if total_predicted < 30
+        else "MEDIUM" if total_predicted < 60
+        else "HIGH"
+    )
+
     return {
-        "chartData": chart_data,
-        "totalPatients": total_predicted,
-        "alreadyBooked": existing_count
+        "alreadyBooked": already_booked,
+        "hourlyAvg": hourly_avg,
+        "estimatedRange": f"{est_min}–{est_max}",
+        "crowdLevel": crowd,
+        "chartData": chart_data
     }
 
-# ---------------- LOAD WHATSAPP ROUTER ----------------
-# ⚠️ DO NOT TOUCH – WhatsApp logic stays same
+# ---------------- WHATSAPP ROUTER ----------------
 from webhook import router
 app.include_router(router)

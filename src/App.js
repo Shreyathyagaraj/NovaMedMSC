@@ -6,6 +6,7 @@ import {
   Route,
   useParams,
   Link,
+  useLocation,
 } from "react-router-dom";
 
 import LoginPage from "./LoginPage";
@@ -16,51 +17,52 @@ import PredictionPage from "./PredictionPage";
 import PatientList from "./components/PatientList";
 import FAQPage from "./FAQPage";
 
-
-// ✅ Wrapper to extract department name from the URL
+// ✅ Wrapper to extract department name
 function AppointmentPageWrapper() {
   const { departmentName } = useParams();
   return <AppointmentPage department={departmentName} />;
 }
 
-// ✅ Main App
-export default function App() {
+// ✅ Navbar Component
+function Navbar() {
   return (
-    <Router>
-      {/* 🔝 Navigation Bar */}
-      <nav
-        style={{
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "center",
-          padding: "12px",
-          backgroundColor: "#007bff",
-          color: "white",
-          fontWeight: "500",
-          gap: "20px",
-          position: "sticky",
-          top: 0,
-          zIndex: 1000,
-        }}
-      >
-        <Link to="/home" style={navLink}>
-          🏠 Home
-        </Link>
-        <Link to="/patients" style={navLink}>
-          📋 Patients
-        </Link>
-        <Link to="/predict" style={navLink}>
-          📊 Prediction
-        </Link>
-        <Link to="/faq" style={navLink}>
-          ❓ FAQ
-        </Link>
-        <Link to="/" style={navLink}>
-          🔐 Logout
-        </Link>
-      </nav>
+    <nav
+      style={{
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+        padding: "12px",
+        backgroundColor: "#007bff",
+        color: "white",
+        fontWeight: "500",
+        gap: "20px",
+        position: "sticky",
+        top: 0,
+        zIndex: 1000,
+      }}
+    >
+      <Link to="/home" style={navLink}>🏠 Home</Link>
+      <Link to="/patients" style={navLink}>📋 Patients</Link>
+      <Link to="/predict" style={navLink}>📊 Prediction</Link>
+      <Link to="/faq" style={navLink}>❓ FAQ</Link>
+      <Link to="/" style={navLink}>🔐 Logout</Link>
+    </nav>
+  );
+}
 
-      {/* ✅ Page Routes */}
+// ✅ App Layout (controls navbar visibility)
+function AppLayout() {
+  const location = useLocation();
+
+  // ❌ Routes where navbar should NOT appear
+  const hideNavbarRoutes = ["/", "/signup"];
+
+  const showNavbar = !hideNavbarRoutes.includes(location.pathname);
+
+  return (
+    <>
+      {showNavbar && <Navbar />}
+
       <Routes>
         <Route path="/" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
@@ -73,12 +75,20 @@ export default function App() {
           element={<AppointmentPageWrapper />}
         />
       </Routes>
-      
+    </>
+  );
+}
+
+// ✅ Main App
+export default function App() {
+  return (
+    <Router>
+      <AppLayout />
     </Router>
   );
 }
 
-// ✅ Styling for navigation links
+// ✅ Navbar link style
 const navLink = {
   color: "white",
   textDecoration: "none",
@@ -86,4 +96,3 @@ const navLink = {
   fontWeight: "500",
   transition: "0.3s",
 };
-

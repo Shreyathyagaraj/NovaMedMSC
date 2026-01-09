@@ -1,90 +1,89 @@
 import React, { useState } from "react";
+import {
+  LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer
+} from "recharts";
 import { BACKEND_URL } from "./config";
+import "./PredictionPage.css";
 
 export default function PredictionPage() {
-  const [selectedDate, setSelectedDate] = useState("");
-  const [selectedDepartment, setSelectedDepartment] = useState("");
+  const [date, setDate] = useState("");
+  const [department, setDepartment] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const handlePredict = async () => {
+  const predict = async () => {
     setError("");
     setResult(null);
-
-    if (!selectedDate || !selectedDepartment) {
-      setError("Please select both date and department.");
+    if (!date || !department) {
+      setError("Select date & department");
       return;
     }
 
     setLoading(true);
-
     try {
       const res = await fetch(`${BACKEND_URL}/predict`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          date: selectedDate,
-          department: selectedDepartment,
-        }),
+        body: JSON.stringify({ date, department })
       });
-
-      if (!res.ok) {
-        throw new Error("Prediction API failed");
-      }
-
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
       setResult(data);
-    } catch (err) {
-      setError(err.message || "Failed to fetch prediction");
-    } finally {
-      setLoading(false);
+    } catch (e) {
+      setError(e.message);
     }
+    setLoading(false);
   };
 
   return (
-    <div style={{ padding: "40px" }}>
-      <h2>🩺 Patient Load Prediction</h2>
+    <div className="prediction-page">
+      <h1>🩺 Patient Load Prediction</h1>
 
-      <div>
-        <label>Date:</label>
-        <input
-          type="date"
-          value={selectedDate}
-          onChange={(e) => setSelectedDate(e.target.value)}
-        />
+      <div className="input-card">
+        <div>
+          <label>Date</label>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)} />
+        </div>
+
+        <div>
+          <label>Department</label>
+          <select value={department} onChange={e => setDepartment(e.target.value)}>
+            <option value="">Select</option>
+            {[
+              "Cardiology","Pediatrics","Dermatology","Dentist","ENT",
+              "Gynecology","Anesthesiology","General Surgeon","Physician","Ophthalmology"
+            ].map(d => <option key={d}>{d}</option>)}
+          </select>
+        </div>
+
+        <button onClick={predict}>{loading ? "Predicting..." : "🔍 Predict"}</button>
       </div>
 
-      <div>
-        <label>Department:</label>
-        <select
-          value={selectedDepartment}
-          onChange={(e) => setSelectedDepartment(e.target.value)}
-        >
-          <option value="">-- Select --</option>
-          <option value="Cardiology">Cardiology</option>
-          <option value="Neurology">Neurology</option>
-          <option value="Orthopedics">Orthopedics</option>
-          <option value="Pediatrics">Pediatrics</option>
-          <option value="General Medicine">General Medicine</option>
-          <option value="Dermatology">Dermatology</option>
-        </select>
-      </div>
-
-      <button onClick={handlePredict} disabled={loading}>
-        {loading ? "Predicting..." : "Predict"}
-      </button>
-
-      {error && <p style={{ color: "red" }}>{error}</p>}
+      {error && <p className="error">{error}</p>}
 
       {result && (
-        <div style={{ marginTop: "20px" }}>
-          <p><strong>Department:</strong> {result.department}</p>
-          <p><strong>Date:</strong> {result.date}</p>
-          <p><strong>Already Booked:</strong> {result.alreadyBooked}</p>
-          <p><strong>Predicted Patients:</strong> {result.predictedPatients}</p>
-          <p><strong>Crowd Level:</strong> {result.crowdLevel}</p>
-        </div>
+        <>
+          <div className="stats">
+            <div className="card"><h4>Already Booked</h4><p>{result.alreadyBooked}</p></div>
+            <div className="card"><h4>Hourly Avg Load</h4><p>{result.hourlyAvg}</p></div>
+            <div className="card"><h4>Estimated Daily Visits</h4><p>{result.estimatedRange}</p></div>
+            <div className="card crowd"><h4>Crowd Level</h4><p>{result.crowdLevel}</p></div>
+          </div>
+
+          <div className="chart-card">
+            <h3>Hour-wise Patient Prediction</h3>
+            <ResponsiveContainer width="100%" height={320}>
+              <LineChart data={result.chartData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="hour" />
+                <YAxis />
+                <Tooltip />
+                <Line type="monotone" dataKey="predicted" stroke="#2563eb" strokeWidth={3} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </>
       )}
     </div>
   );
