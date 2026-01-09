@@ -1,6 +1,5 @@
 import os, json, logging, random
 from datetime import datetime, timedelta
-from typing import Dict
 
 import httpx, dateparser
 from fastapi import APIRouter, Request, HTTPException
@@ -15,48 +14,51 @@ from reportlab.lib.units import inch
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# --------------------------------------------------
-# CONFIG
-# --------------------------------------------------
-STATE_TIMEOUT_MINUTES = 5
-
-# --------------------------------------------------
+# ==================================================
 # LOGGING
-# --------------------------------------------------
+# ==================================================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("webhook")
 
-# --------------------------------------------------
-# FIREBASE INIT
-# --------------------------------------------------
+# ==================================================
+# FIREBASE INIT (SAFE)
+# ==================================================
 if not firebase_admin._apps:
-    cred = credentials.Certificate(json.loads(os.getenv("FIREBASE_CREDENTIALS")))
-    firebase_admin.initialize_app(cred)
+    try:
+        fb_env = os.getenv("FIREBASE_CREDENTIALS")
+        if fb_env:
+            cred = credentials.Certificate(json.loads(fb_env))
+        else:
+            cred = credentials.Certificate("serviceAccountKey.json")
+        firebase_admin.initialize_app(cred)
+    except Exception as e:
+        logger.error("Firebase init failed: %s", e)
+        raise
 
 db = firestore.client()
 
-# --------------------------------------------------
+# ==================================================
 # ROUTER
-# --------------------------------------------------
+# ==================================================
 router = APIRouter()
 
-# --------------------------------------------------
+# ==================================================
 # WHATSAPP CONFIG
-# --------------------------------------------------
+# ==================================================
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 WA_API = f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages"
 
-# --------------------------------------------------
+# ==================================================
 # SCHEDULER
-# --------------------------------------------------
+# ==================================================
 scheduler = BackgroundScheduler()
 scheduler.start()
 
-# --------------------------------------------------
-# DOCTORS
-# --------------------------------------------------
+# ==================================================
+# DEPARTMENTS
+# ==================================================
 DOCTORS = {
     "Cardiology": ("10:00", "16:00", 5),
     "Neurology": ("12:00", "16:00", 4),
@@ -66,11 +68,11 @@ DOCTORS = {
     "Dermatology": ("09:00", "18:00", 12),
 }
 
-# --------------------------------------------------
+# ==================================================
 # WHATSAPP HELPERS
-# --------------------------------------------------
+# ==================================================
 async def wa_send(payload):
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(timeout=20) as client:
         await client.post(
             WA_API,
             headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"},
@@ -129,18 +131,24 @@ async def send_document(to, file_path):
                 files={"file": f},
                 data={"messaging_product": "whatsapp", "type": "document"}
             )
+
     media_id = res.json()["id"]
 
     await wa_send({
         "messaging_product": "whatsapp",
         "to": to,
         "type": "document",
-        "document": {"id": media_id, "filename": os.path.basename(file_path)}
+        "document": {
+            "id": media_id,
+            "filename": os.path.basename(file_path)
+        }
     })
 
-# --------------------------------------------------
-# STATE MANAGEMENT
-# --------------------------------------------------
+# ==================================================
+# STATE HANDLING (WITH TIMEOUT)
+# ==================================================
+SESSION_TIMEOUT = 10  # minutes
+
 def get_state(user):
     doc = db.collection("states").document(user).get()
     return doc.to_dict() if doc.exists else {}
@@ -156,14 +164,14 @@ def reset_state(user):
     db.collection("states").document(user).delete()
 
 def is_state_expired(state):
-    ts = state.get("updated")
-    if not ts:
-        return True
-    return datetime.utcnow() - ts.replace(tzinfo=None) > timedelta(minutes=STATE_TIMEOUT_MINUTES)
+    updated = state.get("updated")
+    if not updated:
+        return False
+    return (datetime.utcnow() - updated.replace(tzinfo=None)) > timedelta(minutes=SESSION_TIMEOUT)
 
-# --------------------------------------------------
+# ==================================================
 # PATIENT ID
-# --------------------------------------------------
+# ==================================================
 def generate_patient_id():
     ref = db.collection("metadata").document("patient_counter")
     tx = db.transaction()
@@ -178,9 +186,9 @@ def generate_patient_id():
 
     return run(tx)
 
-# --------------------------------------------------
-# SLOTS
-# --------------------------------------------------
+# ==================================================
+# TIME SLOTS
+# ==================================================
 def generate_slots(start, end):
     s = datetime.strptime(start, "%H:%M")
     e = datetime.strptime(end, "%H:%M")
@@ -199,17 +207,18 @@ def slot_count(dept, date, slot):
         .stream()
     return sum(1 for _ in q)
 
-# --------------------------------------------------
-# PDF
-# --------------------------------------------------
+# ==================================================
+# PDF REPORT
+# ==================================================
 def create_pdf(patient):
     path = f"/tmp/{patient['PatientID']}_report.pdf"
     styles = getSampleStyleSheet()
     doc = SimpleDocTemplate(path, pagesize=A4)
-    story = []
 
+    story = []
     story.append(Paragraph("<b>NovaMed Multispeciality Care</b>", styles["Title"]))
     story.append(Spacer(1, 0.3 * inch))
+
     story.append(Paragraph("<b>Patient Medical Report</b>", styles["Heading2"]))
     story.append(Spacer(1, 0.2 * inch))
 
@@ -225,21 +234,14 @@ def create_pdf(patient):
     ))
 
     story.append(Spacer(1, 0.3 * inch))
-    story.append(Paragraph(
-        f"""
-        <b>Test Results</b><br/>
-        BP: {random.randint(110,130)}/{random.randint(70,90)} mmHg<br/>
-        Sugar: {random.randint(90,140)} mg/dL<br/>
-        Heart Rate: {random.randint(65,95)} bpm
-        """, styles["Normal"]
-    ))
+    story.append(Paragraph("<i>There is no true illness</i>", styles["Italic"]))
 
     doc.build(story)
     return path
 
-# --------------------------------------------------
+# ==================================================
 # REMINDER
-# --------------------------------------------------
+# ==================================================
 def schedule_reminder(user, patient):
     t = datetime.strptime(
         f"{patient['Date']} {patient['Time'].split('-')[0]}",
@@ -252,20 +254,20 @@ def schedule_reminder(user, patient):
 
     scheduler.add_job(job, "date", run_date=t)
 
-# --------------------------------------------------
+# ==================================================
 # MENU
-# --------------------------------------------------
+# ==================================================
 async def show_menu(user):
     await send_buttons(
         user,
-        "🏥 *NovaMed Multispeciality Care*\n“There is no true illness”\n\nChoose:",
+        "🏥 *NovaMed Multispeciality Care*\n“There is no true illness”",
         ["Book Appointment", "Get Report"]
     )
     set_state(user, "menu", {})
 
-# --------------------------------------------------
+# ==================================================
 # MAIN FLOW
-# --------------------------------------------------
+# ==================================================
 async def process(user, text):
     text = text.strip()
     greetings = ["hi", "hello", "hii", "hlo", "hyy", "hey", "menu", "restart"]
@@ -276,7 +278,6 @@ async def process(user, text):
         return
 
     state = get_state(user)
-
     if state and is_state_expired(state):
         reset_state(user)
         await send_text(user, "⌛ Session expired.")
@@ -295,20 +296,90 @@ async def process(user, text):
             await send_text(user, "🆔 Enter Patient ID:")
         return
 
+    if step == "name":
+        data["Name"] = text
+        set_state(user, "phone", data)
+        await send_text(user, "📞 Enter 10-digit phone number:")
+        return
+
+    if step == "phone":
+        if not text.isdigit() or len(text) != 10:
+            await send_text(user, "❌ Phone number must be exactly 10 digits")
+            return
+        data["Phone"] = text
+        set_state(user, "department", data)
+        await send_list(user, "🏥 Select Department:", list(DOCTORS.keys()))
+        return
+
+    if step == "department":
+        if text not in DOCTORS:
+            await send_text(user, "❌ Invalid department")
+            return
+        data["Department"] = text
+        set_state(user, "date", data)
+        await send_text(user, "📅 Enter date (YYYY-MM-DD):")
+        return
+
+    if step == "date":
+        parsed = dateparser.parse(text)
+        if not parsed or parsed.date() < datetime.now().date():
+            await send_text(user, "❌ Invalid or past date")
+            return
+        data["Date"] = parsed.strftime("%Y-%m-%d")
+
+        start, end, cap = DOCTORS[data["Department"]]
+        slots = generate_slots(start, end)
+
+        available = []
+        for s in slots:
+            left = cap - slot_count(data["Department"], data["Date"], s)
+            if left > 0:
+                available.append(f"{s} ({left} left)")
+
+        if not available:
+            await send_text(user, "❌ No slots available")
+            reset_state(user)
+            return
+
+        set_state(user, "time", data)
+        await send_buttons(user, "⏰ Select Time Slot:", available)
+        return
+
+    if step == "time":
+        data["Time"] = text.split(" ")[0]
+        pid = generate_patient_id()
+
+        record = {
+            "PatientID": pid,
+            **data,
+            "WhatsApp": user,
+            "createdAt": firestore.SERVER_TIMESTAMP
+        }
+
+        db.collection("patients").document(pid).set(record)
+        set_state(user, "reminder", record)
+        await send_buttons(user, "⏰ Need 10-min reminder?", ["Yes", "No"])
+        return
+
+    if step == "reminder":
+        if text == "Yes":
+            schedule_reminder(user, data)
+        await send_text(user, f"✅ Appointment Confirmed\n🆔 {data['PatientID']}")
+        reset_state(user)
+        return
+
     if step == "report":
-        pid = text.upper().strip()
-        doc = db.collection("patients").document(pid).get()
+        doc = db.collection("patients").document(text).get()
         if not doc.exists:
             await send_text(user, "❌ Patient ID not found")
             return
         pdf = create_pdf(doc.to_dict())
         await send_document(user, pdf)
         reset_state(user)
-        return
 
-# --------------------------------------------------
+# ==================================================
 # WEBHOOK ENDPOINTS
-# --------------------------------------------------
+# ==================================================
 @router.get("/webhook")
 async def verify(req: Request):
     if req.query_params.get("hub.verify_token") == VERIFY_TOKEN:
