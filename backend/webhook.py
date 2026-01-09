@@ -14,43 +14,43 @@ from reportlab.lib.units import inch
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# ==================================================
+# ======================================================
 # LOGGING
-# ==================================================
+# ======================================================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("webhook")
 
-# ==================================================
+# ======================================================
 # FIREBASE INIT
-# ==================================================
+# ======================================================
 if not firebase_admin._apps:
     cred = credentials.Certificate(json.loads(os.getenv("FIREBASE_CREDENTIALS")))
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()
 
-# ==================================================
+# ======================================================
 # ROUTER
-# ==================================================
+# ======================================================
 router = APIRouter()
 
-# ==================================================
+# ======================================================
 # WHATSAPP CONFIG
-# ==================================================
+# ======================================================
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 WA_API = f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages"
 
-# ==================================================
+# ======================================================
 # SCHEDULER
-# ==================================================
+# ======================================================
 scheduler = BackgroundScheduler()
 scheduler.start()
 
-# ==================================================
-# DEPARTMENTS
-# ==================================================
+# ======================================================
+# DOCTORS
+# ======================================================
 DOCTORS = {
     "Cardiology": ("10:00", "16:00", 5),
     "Neurology": ("12:00", "16:00", 4),
@@ -60,9 +60,9 @@ DOCTORS = {
     "Dermatology": ("09:00", "18:00", 12),
 }
 
-# ==================================================
+# ======================================================
 # WHATSAPP HELPERS
-# ==================================================
+# ======================================================
 async def wa_send(payload):
     async with httpx.AsyncClient(timeout=20) as client:
         res = await client.post(
@@ -71,7 +71,7 @@ async def wa_send(payload):
             json=payload
         )
         if res.status_code >= 400:
-            logger.error("WhatsApp error: %s", res.text)
+            logger.error("WhatsApp API error: %s", res.text)
 
 async def send_text(to, text):
     await wa_send({
@@ -98,7 +98,7 @@ async def send_buttons(to, body, buttons):
         }
     })
 
-async def send_list(to, body, rows, title="Options"):
+async def send_list(to, body, rows):
     await wa_send({
         "messaging_product": "whatsapp",
         "to": to,
@@ -109,16 +109,16 @@ async def send_list(to, body, rows, title="Options"):
             "action": {
                 "button": "Select",
                 "sections": [{
-                    "title": title,
+                    "title": "Departments",
                     "rows": [{"id": r, "title": r} for r in rows]
                 }]
             }
         }
     })
 
-async def send_document(to, file_path):
+async def send_document(to, path):
     async with httpx.AsyncClient(timeout=30) as client:
-        with open(file_path, "rb") as f:
+        with open(path, "rb") as f:
             res = await client.post(
                 f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/media",
                 headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"},
@@ -135,9 +135,9 @@ async def send_document(to, file_path):
         "document": {"id": media_id}
     })
 
-# ==================================================
+# ======================================================
 # STATE
-# ==================================================
+# ======================================================
 def get_state(user):
     doc = db.collection("states").document(user).get()
     return doc.to_dict() if doc.exists else {}
@@ -152,9 +152,9 @@ def set_state(user, step, data):
 def reset_state(user):
     db.collection("states").document(user).delete()
 
-# ==================================================
-# UTIL
-# ==================================================
+# ======================================================
+# UTILITIES
+# ======================================================
 def generate_patient_id():
     ref = db.collection("metadata").document("patient_counter")
     tx = db.transaction()
@@ -187,9 +187,9 @@ def slot_count(dept, date, slot):
         .stream()
     return sum(1 for _ in q)
 
-# ==================================================
-# PDF REPORT (FIXED)
-# ==================================================
+# ======================================================
+# PDF REPORT
+# ======================================================
 def create_pdf(patient):
     path = f"/tmp/{patient['PatientID']}_report.pdf"
     styles = getSampleStyleSheet()
@@ -198,7 +198,6 @@ def create_pdf(patient):
     story = []
     story.append(Paragraph("<b>NovaMed Multispeciality Care</b>", styles["Title"]))
     story.append(Spacer(1, 0.3 * inch))
-
     story.append(Paragraph("<b>Patient Medical Report</b>", styles["Heading2"]))
     story.append(Spacer(1, 0.2 * inch))
 
@@ -210,31 +209,24 @@ def create_pdf(patient):
         Department: {patient['Department']}<br/>
         Date: {patient['Date']}<br/>
         Time: {patient['Time']}<br/>
-        """,
-        styles["Normal"]
+        """, styles["Normal"]
     ))
 
     story.append(Spacer(1, 0.3 * inch))
-
     story.append(Paragraph(
         f"""
-        <b>Test Results</b><br/>
         BP: {random.randint(110,130)}/{random.randint(70,90)} mmHg<br/>
         Sugar: {random.randint(90,140)} mg/dL<br/>
         Heart Rate: {random.randint(65,95)} bpm
-        """,
-        styles["Normal"]
+        """, styles["Normal"]
     ))
-
-    story.append(Spacer(1, 0.3 * inch))
-    story.append(Paragraph("<i>System generated report</i>", styles["Italic"]))
 
     doc.build(story)
     return path
 
-# ==================================================
+# ======================================================
 # MENU
-# ==================================================
+# ======================================================
 async def show_menu(user):
     await send_buttons(
         user,
@@ -243,9 +235,9 @@ async def show_menu(user):
     )
     set_state(user, "menu", {})
 
-# ==================================================
-# MAIN FLOW (UNCHANGED APPOINTMENT LOGIC)
-# ==================================================
+# ======================================================
+# MAIN FLOW (STABLE)
+# ======================================================
 async def process(user, text):
     text = text.strip()
     greetings = ["hi", "hello", "hii", "hlo", "hyy", "hey", "menu"]
@@ -259,6 +251,7 @@ async def process(user, text):
     step = state.get("step")
     data = state.get("data", {})
 
+    # ---------------- MENU ----------------
     if step == "menu":
         if text == "Book Appointment":
             set_state(user, "name", {})
@@ -268,22 +261,87 @@ async def process(user, text):
             await send_text(user, "🆔 Enter Patient ID:")
         return
 
+    # ---------------- APPOINTMENT ----------------
+    if step == "name":
+        data["Name"] = text
+        set_state(user, "phone", data)
+        await send_text(user, "📞 Enter 10-digit phone number:")
+        return
+
+    if step == "phone":
+        if not text.isdigit() or len(text) != 10:
+            await send_text(user, "❌ Phone must be exactly 10 digits")
+            return
+        data["Phone"] = text
+        set_state(user, "department", data)
+        await send_list(user, "🏥 Select Department:", list(DOCTORS.keys()))
+        return
+
+    if step == "department":
+        if text not in DOCTORS:
+            await send_text(user, "❌ Invalid department")
+            return
+        data["Department"] = text
+        set_state(user, "date", data)
+        await send_text(user, "📅 Enter date (YYYY-MM-DD / today / tomorrow):")
+        return
+
+    if step == "date":
+        parsed = dateparser.parse(text)
+        if not parsed or parsed.date() < datetime.now().date():
+            await send_text(user, "❌ Invalid or past date")
+            return
+
+        data["Date"] = parsed.strftime("%Y-%m-%d")
+        start, end, cap = DOCTORS[data["Department"]]
+
+        slots = generate_slots(start, end)
+        available = []
+
+        for s in slots:
+            left = cap - slot_count(data["Department"], data["Date"], s)
+            if left > 0:
+                available.append(f"{s} ({left} left)")
+
+        if not available:
+            await send_text(user, "❌ No slots available for this date")
+            reset_state(user)
+            return
+
+        set_state(user, "time", data)
+        await send_buttons(user, "⏰ Select Time Slot:", available)
+        return
+
+    if step == "time":
+        data["Time"] = text.split(" ")[0]
+        pid = generate_patient_id()
+
+        record = {
+            "PatientID": pid,
+            **data,
+            "WhatsApp": user,
+            "createdAt": firestore.SERVER_TIMESTAMP
+        }
+
+        db.collection("patients").document(pid).set(record)
+        await send_text(user, f"✅ Appointment Confirmed\n🆔 {pid}")
+        reset_state(user)
+        return
+
+    # ---------------- REPORT ----------------
     if step == "report":
         doc = db.collection("patients").document(text).get()
         if not doc.exists:
-            await send_text(user, "❌ Patient ID not found.\nPlease enter a valid Patient ID:")
+            await send_text(user, "❌ Patient ID not found. Try again:")
             return
         pdf = create_pdf(doc.to_dict())
         await send_document(user, pdf)
         reset_state(user)
         return
 
-    # ---- appointment logic below remains untouched ----
-    # (same as your working version)
-
-# ==================================================
+# ======================================================
 # WEBHOOK
-# ==================================================
+# ======================================================
 @router.get("/webhook")
 async def verify(req: Request):
     if req.query_params.get("hub.verify_token") == VERIFY_TOKEN:
@@ -304,8 +362,8 @@ async def receive(req: Request):
     if msg.get("interactive"):
         inter = msg["interactive"]
         text = (
-            inter.get("list_reply", {}) or
-            inter.get("button_reply", {})
+            inter.get("button_reply", {}) or
+            inter.get("list_reply", {})
         ).get("title", "")
     else:
         text = msg.get("text", {}).get("body", "")
