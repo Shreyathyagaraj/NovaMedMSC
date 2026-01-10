@@ -1,7 +1,7 @@
-import os, json, logging, random
+import os, json, logging
 from datetime import datetime, timedelta
 
-import httpx, dateparser
+import httpx
 from fastapi import APIRouter, Request, HTTPException
 
 import firebase_admin
@@ -211,10 +211,9 @@ async def show_menu(user):
 # MAIN FLOW
 # ======================================================
 async def process(user, text):
-    text = text.strip()
-    greetings = ["hi", "hello", "hii", "hlo", "hyy", "hey", "menu"]
+    text = text.strip().lower()
 
-    if text.lower() in greetings:
+    if text in ["hi", "hello", "hii", "hlo", "hey", "menu"]:
         reset_state(user)
         await show_menu(user)
         return
@@ -229,24 +228,24 @@ async def process(user, text):
 
     # ---------------- MENU ----------------
     if step == "menu":
-        if text == "Book Appointment":
+        if text == "book appointment":
             set_state(user, "name", {})
             await send_text(user, "👤 Enter patient name:")
-        elif text == "Get Report":
+        elif text == "get report":
             set_state(user, "report", {})
             await send_text(user, "🆔 Enter Patient ID:")
         return
 
     # ---------------- APPOINTMENT ----------------
     if step == "name":
-        data["Name"] = text
+        data["Name"] = text.title()
         set_state(user, "phone", data)
         await send_text(user, "📞 Enter 10-digit phone number:")
         return
 
     if step == "phone":
         if not text.isdigit() or len(text) != 10:
-            await send_text(user, "❌ Invalid phone number")
+            await send_text(user, "❌ Phone must be exactly 10 digits")
             return
         data["Phone"] = text
         set_state(user, "department", data)
@@ -254,58 +253,64 @@ async def process(user, text):
         return
 
     if step == "department":
-        data["Department"] = text
+        data["Department"] = text.title()
         set_state(user, "date", data)
-        await send_text(user, "📅 Enter appointment date:")
+        await send_text(user, "📅 Enter appointment date in format YYYY-MM-DD")
         return
 
+    # 🔥 FIXED DATE STEP
     if step == "date":
-        parsed = dateparser.parse(text)
-        if not parsed or parsed.date() < datetime.now().date():
-            await send_text(user, "❌ Past dates not allowed")
+        try:
+            parsed = datetime.strptime(text, "%Y-%m-%d")
+        except ValueError:
+            await send_text(user, "❌ Invalid date format. Use YYYY-MM-DD")
+            return
+
+        if parsed.date() < datetime.now().date():
+            await send_text(user, "❌ Past dates are not allowed")
             return
 
         data["Date"] = parsed.strftime("%Y-%m-%d")
+
         start, end, cap = DOCTORS[data["Department"]]
         now = datetime.now()
 
-        slots_display = []
+        slots = []
         for s in generate_slots(start, end):
-            slot_start = datetime.strptime(f"{data['Date']} {s.split('-')[0]}", "%Y-%m-%d %H:%M")
-            if slot_start <= now:
+            slot_time = datetime.strptime(
+                f"{data['Date']} {s.split('-')[0]}",
+                "%Y-%m-%d %H:%M"
+            )
+
+            if slot_time <= now:
                 continue
 
             left = cap - slot_count(data["Department"], data["Date"], s)
             if left > 0:
-                slots_display.append(f"{s} ({left} slots left)")
+                slots.append(f"{s} ({left} slots left)")
 
-        if not slots_display:
-            await send_text(user, "❌ No slots available")
+        if not slots:
+            await send_text(user, "❌ No slots available for this date")
             reset_state(user)
             return
 
         set_state(user, "time", data)
-        await send_buttons(user, "⏰ Select Time Slot:", slots_display)
+        await send_buttons(user, "⏰ Select Time Slot:", slots)
         return
 
     if step == "time":
         data["Time"] = text.split(" ")[0]
         set_state(user, "reminder", data)
-        await send_buttons(user, "⏰ Do you want appointment reminder?", ["Yes", "No"])
+        await send_buttons(user, "⏰ Do you want reminder?", ["Yes", "No"])
         return
 
     if step == "reminder":
         pid = generate_patient_id()
-        record = {
-            "PatientID": pid,
-            **data,
-            "WhatsApp": user,
-            "createdAt": firestore.SERVER_TIMESTAMP
-        }
+        record = {**data, "PatientID": pid}
 
         db.collection("patients").document(pid).set(record)
 
-        if text == "Yes":
+        if text == "yes":
             schedule_reminder(user, record)
 
         await send_text(user, f"✅ Appointment Confirmed\n🆔 {pid}")
@@ -314,11 +319,12 @@ async def process(user, text):
 
     # ---------------- REPORT ----------------
     if step == "report":
-        doc = db.collection("patients").document(text).get()
+        doc = db.collection("patients").document(text.upper()).get()
         if not doc.exists:
             await send_text(user, "❌ Patient ID not found")
             return
-        await send_text(user, "📄 Report found. Please contact hospital reception.")
+
+        await send_text(user, "📄 Report found. Please visit hospital reception.")
         reset_state(user)
 
 # ======================================================
